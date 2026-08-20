@@ -15,13 +15,24 @@ if os.path.exists(blend_path):
 
 # Godot suffix: '-col' for Trimesh (precise) or '-convcol' for Convex (optimized)
 SUFFIXE = "-col"
+THRESHOLD = 1.0
 
+import math
+
+count = 0
 for obj in bpy.data.objects:
-    # Target only 3D meshes
-    if obj.type == 'MESH':
-        # Avoid duplicates if script is rerun
-        if not (obj.name.endswith("-col") or obj.name.endswith("-convcol")):
-            obj.name += SUFFIXE
+    if obj.type != 'MESH':
+        continue
+    if obj.name.endswith("-col") or obj.name.endswith("-convcol"):
+        continue
+
+    dims = obj.dimensions
+    diameter = math.sqrt(dims.x**2 + dims.y**2 + dims.z**2)
+    if diameter >= THRESHOLD:
+        obj.name += SUFFIXE
+        count += 1
+
+print(f"[+] {count} objets > {THRESHOLD} unites renommes avec {SUFFIXE}")
 
 bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 print(f"[+] Saved: {blend_path}")
