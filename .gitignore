@@ -1,0 +1,11 @@
+mods/
+data/
+!mods/README.md
+!data/README.md
+tes3conv
+openmw-tools/
+io_scene_mw/
+*.blend*
+*.glb
+output*.json
+config.json
