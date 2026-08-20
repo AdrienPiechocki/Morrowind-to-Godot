@@ -21,7 +21,7 @@ def hide_recursive(obj):
         hide_recursive(child)
 
 for obj in bpy.data.objects:
-    if "collision" in obj.name.lower() or "object" in obj.name.lower() or "shadowbox" in obj.name.lower() or "marker_north" in obj.name.lower():
+    if "collision" in obj.name.lower() or "shadowbox" in obj.name.lower() or "marker_north" in obj.name.lower():
         hide_recursive(obj)
 
 # Remove Blender default objects
