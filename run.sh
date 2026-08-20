@@ -330,7 +330,7 @@ blender --background --python scripts/1-generate_blend.py -- \
     --textures data/textures \
     --cell "$CELL_NAME"
 
-for script in 2-tga_to_png 3-rebuild_mat 4-no_lube 5-cleanup 6-set_collision; do
+for script in 2-tga_to_png 3-rebuild_mat 3.5-dedup_materials 4-no_lube 5-cleanup 6-set_collision; do
     echo "[..] Launching Blender (script ${script})..."
     blender --background --python "scripts/${script}.py"
 done
