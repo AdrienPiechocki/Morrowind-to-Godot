@@ -9,3 +9,4 @@ io_scene_mw/
 *.glb
 output*.json
 config.json
+scripts/__pycache__/
