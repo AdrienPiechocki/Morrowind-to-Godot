@@ -171,11 +171,11 @@ def build_npc_mesh_paths(rec):
         # Certains NPCs n'ont pas de modèle : squelette par défaut de la race
         entries.append((get_default_skeleton(rec.get("race"), is_female), None))
 
-    # Tête et cheveux
+    # Tête et cheveux : parties de peau de la race (un casque les masque)
     for key, hint in (("head", "Head"), ("hair", "Hair")):
         bp = bodypart_map.get((rec.get(key) or "").lower())
         if bp and bp.get("mesh"):
-            entries.append((bp["mesh"], hint))
+            entries.append((bp["mesh"], hint, True))
 
     # Vêtements / armures portés
     for _count, item_id in rec.get("inventory", []):
@@ -708,21 +708,28 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                      and 'right hand' not in o.name.lower()]
             targets = attach_targets_for_slot(slot_hint)
 
-            # Chaîne pristine COMPLÈTE (racine du fichier incluse) pour chaque
-            # objet : le moteur clone le sous-graphe avec le transform de sa
-            # racine avant de l'ajouter au nœud d'attache. Indispensable pour
-            # les pièces qui SONT la racine de leur fichier (parties de race :
-            # nuque, groin, cuisses...) et dont la matrice authorée serait
-            # sinon perdue (racine => aucune chaîne parentale à remonter).
+            # Chaîne pristine pour chaque objet, en NEUTRALISANT le transform
+            # de la racine CONTENEUR du fichier (empty sans géométrie) : le
+            # moteur ignore ce transform à l'attache. Les racines non identité
+            # ('A_Orcish_Boots_F' (-0.06,-0.03,+0.03), cuirass 'Bip01'
+            # (0,+0.01,+0.76)...) décalent sinon la pièce de quelques cm.
+            # Les pièces qui SONT leur propre racine (parties de race : nuque,
+            # groin...) gardent leur matrice authorée : c'est LEUR transform.
             def pristine_chain(t_obj):
-                m = Matrix.Identity(4)
+                entries = []
                 cur = t_obj
                 while cur is not None:
                     info = snapshot.get(cur)
                     if info is None:
                         break
-                    m = info['matrix_local'] @ m
+                    entries.append((cur, info['matrix_local']))
                     cur = info['parent']
+                m = Matrix.Identity(4)
+                for i, (obj, ml) in enumerate(entries):
+                    if i == len(entries) - 1 and obj.type != 'MESH' \
+                            and t_obj is not obj:
+                        continue  # racine conteneur : ignorée
+                    m = ml @ m
                 return m
 
             # Uniquement pour les pièces qui seront attachées (rigides) ;
@@ -819,6 +826,10 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
         "chest": ("chest",),
         "groin": ("groin",),
         "skirt": ("groin",),
+        # Un casque occupe le slot 'Head' et masque la CHEVELURE
+        # (la tête reste visible) ; les noms de pièces cheveux
+        # contiennent toujours 'hair'.
+        "head": ("hair",),
         "upperleg": ("upper leg",),
         "knee": ("knee",),
         "ankle": ("ankle",),
