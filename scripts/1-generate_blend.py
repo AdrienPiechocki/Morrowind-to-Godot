@@ -181,14 +181,17 @@ def build_npc_mesh_paths(rec):
     for _count, item_id in rec.get("inventory", []):
         item = item_map.get(item_id.lower())
         if not item:
-            continue
+            continue  # armes & co : jamais importées (item_map = Clothing/Armor)
         for biped in item.get("biped_objects", []):
+            slot_type = (biped.get("biped_object_type") or "")
+            if re.sub(r"[\s_]+", "", slot_type).lower() in ("shield", "weapon"):
+                continue  # boucliers/armes tenues : pas de pièce de corps
             bp_id = biped.get("male_bodypart")
             if is_female and biped.get("female_bodypart"):
                 bp_id = biped.get("female_bodypart")
             bp = bodypart_map.get((bp_id or "").lower())
             if bp and bp.get("mesh"):
-                entries.append((bp["mesh"], biped.get("biped_object_type")))
+                entries.append((bp["mesh"], slot_type))
 
     # Peaux de la race (corps nu, mains, pieds...) : remplace les placeholders
     # génériques 'Tri *' du squelette base_anim.
@@ -391,6 +394,8 @@ ATTACH_NODES_PAIRED = {
     "wrist": "Wrist",
     "forearm": "Forearm",
     "upperarm": "Upper Arm",
+    # Les épaulettes s'attachent aux clavicules (comme OpenMW)
+    "pauldron": "Clavicle",
     "clavicle": "Clavicle",
 }
 
@@ -822,6 +827,7 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
         "wrist": ("wrist",),
         "forearm": ("forearm",),
         "upperarm": ("upper arm",),
+        "pauldron": ("upper arm",),
         "tail": ("tail",),
     }
     covered = set()
@@ -901,7 +907,7 @@ def rebuild_npc_by_name(record_map, seen_cells):
         return 0, 0
 
     # Plusieurs occurrences (cells différentes) : laisser l'utilisateur
-    # choisir laquelle importer. Entrée vide = toutes (comportement initial).
+    # choisir laquelle importer. Entrée vide = la première.
     if len(hits) > 1:
         print()
         print(f"[?] {len(hits)} occurrences trouvées :")
@@ -912,20 +918,21 @@ def rebuild_npc_by_name(record_map, seen_cells):
         try:
             choice = input(
                 "Numéro de l'occurrence à importer "
-                "(entrée vide = toutes) : ").strip()
+                "(entrée vide = 1) : ").strip()
         except EOFError:
-            choice = ""
-        if choice:
-            try:
-                idx = int(choice)
-                if 1 <= idx <= len(hits):
-                    hits = [hits[idx - 1]]
-                else:
-                    print(f"[!] Hors range 1-{len(hits)}, "
-                          f"toutes les occurrences seront importées.")
-            except ValueError:
-                print(f"[!] Entrée invalide ('{choice}'), "
-                      f"toutes les occurrences seront importées.")
+            choice = "1"
+        try:
+            idx = int(choice) if choice else 1
+            if 1 <= idx <= len(hits):
+                hits = [hits[idx - 1]]
+            else:
+                print(f"[!] Hors range 1-{len(hits)}, "
+                      f"première occurrence retenue.")
+                hits = hits[:1]
+        except ValueError:
+            print(f"[!] Entrée invalide ('{choice}'), "
+                  f"première occurrence retenue.")
+            hits = hits[:1]
 
     collection_name = f"MW_{TARGET_NPC_NAME}"
     if collection_name in bpy.data.collections:
