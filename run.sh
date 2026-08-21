@@ -303,20 +303,48 @@ print('[+] Merged output_${ESP_BASENAME}.json into output.json')
 fi
 
 # ==========================================
-# 6. Cell name
+# 6. Import mode + Cell name
 # ==========================================
-step 6 "Cell to convert"
-echo "Enter the cell name (exactly as in Morrowind)"
-echo "E.g.: \"Balmora, Temple\" / \"Balmora, Guild of Mages\""
+step 6 "Import mode"
+echo "What do you want to import?"
+echo "  1) cell - static decor of the cell (default)"
+echo "  2) npc  - NPCs/Creatures with body parts and animations"
 echo ""
-read -rp "Cell [Balmora, Temple]: " CELL_NAME
-CELL_NAME="${CELL_NAME:-Balmora, Temple}"
-# Remove surrounding quotes if present
-CELL_NAME="${CELL_NAME#\"}"
-CELL_NAME="${CELL_NAME%\"}"
-CELL_NAME="${CELL_NAME#\'}"
-CELL_NAME="${CELL_NAME%\'}"
-ok "Cell: $CELL_NAME"
+read -rp "Mode [cells]: " IMPORT_MODE
+case "$IMPORT_MODE" in
+   npc|NPC|2) IMPORT_MODE="npc" ;;
+    *)           IMPORT_MODE="cell" ;;
+esac
+ok "Mode: $IMPORT_MODE"
+
+NPC_NAME=""
+if [ "$IMPORT_MODE" = "npc" ]; then
+    echo "Search a specific NPC/creature by name or id (partial match ok)"
+    echo "Leave empty to import every NPC of the cell instead."
+    echo ""
+    read -rp "NPC [Jiub]: " NPC_NAME
+    NPC_NAME="${NPC_NAME:-Jiub}"
+    NPC_NAME="${NPC_NAME%\"}"
+    NPC_NAME="${NPC_NAME#\"}"
+    NPC_NAME="${NPC_NAME%\'}"
+    NPC_NAME="${NPC_NAME#\'}"
+    [ -n "$NPC_NAME" ] && ok "NPC search: $NPC_NAME" || ok "NPC search: none (all NPCs of the cell)"
+fi
+
+CELL_NAME=""
+if [ "$IMPORT_MODE" = "cell" ]; then
+    echo "Enter the cell name (exactly as in Morrowind)"
+    echo "E.g.: \"Balmora, Temple\" / \"Balmora, Guild of Mages\""
+    echo ""
+    read -rp "Cell [Balmora, Temple]: " CELL_NAME
+    CELL_NAME="${CELL_NAME:-Balmora, Temple}"
+    # Remove surrounding quotes if present
+    CELL_NAME="${CELL_NAME#\"}"
+    CELL_NAME="${CELL_NAME%\"}"
+    CELL_NAME="${CELL_NAME#\'}"
+    CELL_NAME="${CELL_NAME%\'}"
+    ok "Cell: $CELL_NAME"
+fi
 
 # ==========================================
 # 7. Conversion Blender (scripts 1-6)
@@ -324,11 +352,11 @@ ok "Cell: $CELL_NAME"
 step 7 "Blender conversion (scripts 1-6)"
 
 echo "[..] Launching Blender (script 1/6: generation)..."
-blender --background --python scripts/1-generate_blend.py -- \
-    --json output.json \
-    --meshes data/meshes \
-    --textures data/textures \
-    --cell "$CELL_NAME"
+BLENDER_ARGS=(--json output.json --meshes data/meshes --textures data/textures --mode "$IMPORT_MODE")
+[ -n "$NPC_NAME" ] && BLENDER_ARGS+=(--npc "$NPC_NAME")
+[ -n "$CELL_NAME" ] && BLENDER_ARGS+=(--cell "$CELL_NAME")
+
+blender --background --python scripts/1-generate_blend.py -- "${BLENDER_ARGS[@]}"
 
 for script in 2-tga_to_png 3-rebuild_mat 3.5-dedup_materials 4-no_lube 5-cleanup 6-set_collision; do
     echo "[..] Launching Blender (script ${script})..."
