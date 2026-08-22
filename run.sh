@@ -373,6 +373,11 @@ echo "[..] Exporting..."
 blender --background --python scripts/7-export_glb.py
 ok "morrowind.glb generated."
 
+npx @gltf-transform/cli optimize morrowind.glb morrowind.glb \
+  --compress false \
+  --texture-compress webp \
+  --instance false
+
 # ==========================================
 # 9. Cleanup and summary
 # ==========================================
