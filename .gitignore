@@ -7,6 +7,5 @@ openmw-tools/
 io_scene_mw/
 *.blend*
 *.glb
-output*.json
-config.json
+*.json
 scripts/__pycache__/

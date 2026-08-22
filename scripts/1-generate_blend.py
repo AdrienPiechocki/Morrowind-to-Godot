@@ -95,6 +95,7 @@ def get_ref_mesh_paths(rec_info):
 # Maps pour l'assemblage des NPCs (bodyparts + vêtements/armures)
 bodypart_map = {}
 item_map = {}
+race_map = {}
 
 # Cache of imported meshes
 imported_mesh_cache = {}
@@ -107,6 +108,11 @@ imported_mesh_snapshots = {}
 # entre les NIFs (les meshes d'un NIF pointent vers l'armature d'un autre),
 # il faut donc résoudre les cibles au-delà du seul import courant.
 GLOBAL_TEMPLATE_COPY_MAP = {}
+
+# True quand le dernier NPC assemblé n'a trouvé AUCUNE peau de race
+# (préfixe b_n_<race>_<genre> absent des bodyparts) : on garde alors les
+# placeholders 'Tri *' du squelette plutôt qu'un NPC sans torse.
+NPC_RACE_SKINS_MISSING = False
 
 
 # ==========================================
@@ -145,12 +151,57 @@ def build_npc_lookup_maps(data):
             bodypart_map[rid] = record
         elif rtype in ("Clothing", "Armor"):
             item_map[rid] = record
+        elif rtype == "Race":
+            race_map[rid] = record
+
+
+def _race_is_beast(race):
+    """True si la race est une race-bête (squelette base_animkna).
+
+    Se fie au flag Beast du record Race — indispensable pour les races de
+    mods qui ne s'appellent pas khajiit/argonian. Le format exact des flags
+    dépend du convertisseur : on accepte chaîne, liste, dict ou entier
+    (bit 0x02 = Beast côté OpenMW). Sans record Race connu, retombe sur la
+    liste historique.
+    """
+    rid = (race or "").strip().lower()
+    rec = race_map.get(rid)
+    if rec is None:
+        return rid in ("khajiit", "argonian")
+    # tes3conv met les flags du record RACE dans data.flags
+    # ("PLAYABLE | BEAST_RACE"), le champ racine restant vide.
+    candidates = (
+        rec.get("flags"),
+        rec.get("race_flags"),
+        (rec.get("data") or {}).get("flags"),
+    )
+    for flags in candidates:
+        if not flags:
+            continue
+        if isinstance(flags, str):
+            if "beast" in flags.lower():
+                return True
+            try:
+                if int(flags, 0) & 0x02:
+                    return True
+            except ValueError:
+                pass
+        elif isinstance(flags, (list, tuple)):
+            if any(isinstance(f, str) and "beast" in f.lower()
+                   for f in flags):
+                return True
+        elif isinstance(flags, dict):
+            if any("beast" in str(k).lower() and v for k, v in flags.items()):
+                return True
+        elif isinstance(flags, (int, float)):
+            if int(flags) & 0x02:
+                return True
+    return False
 
 
 def get_default_skeleton(race, is_female):
     """Squelette d'animation par défaut selon la race (comme le jeu quand mesh est vide)."""
-    kna = (race or "").strip().lower() in ("khajiit", "argonian")
-    if kna:
+    if _race_is_beast(race):
         return "base_animkna.nif"
     return "base_anim_female.nif" if is_female else "base_anim.nif"
 
@@ -195,26 +246,67 @@ def build_npc_mesh_paths(rec):
 
     # Peaux de la race (corps nu, mains, pieds...) : remplace les placeholders
     # génériques 'Tri *' du squelette base_anim.
+    # Résolution EXACTE du moteur (NpcAnimation::getBodyParts) : chaque
+    # Bodypart porte un champ 'race' comparé à la race du NPC, et un flag
+    # 'FEMALE' pour le genre — AUCUNE convention de nom d'id n'est supposée
+    # (les races de mods type Tamriel Data utilisent des ids arbitraires).
+    # Fallback mâle -> femelle par partie manquante, comme OpenMW.
+    global NPC_RACE_SKINS_MISSING
+    NPC_RACE_SKINS_MISSING = False
     if rec.get("type") == "Npc":
         race = (rec.get("race") or "").strip().lower()
-        gender = "f" if is_female else "m"
-        prefix = f"b_n_{race}_{gender}"
         seen = {e[0] for e in entries}
-        for bp_id, bp in bodypart_map.items():
-            data = bp.get("data") or {}
-            part = (data.get("part") or "")
-            if not bp_id.startswith(prefix):
-                continue
-            if data.get("bodypart_type") != "Skin":
-                continue
-            if part.lower() in ("head", "hair"):
-                continue  # déjà gérés via npc.head / npc.hair
-            if ".1st" in bp_id:
-                continue  # vue première personne
-            mesh = bp.get("mesh")
-            if mesh and mesh not in seen:
+
+        def _race_skins(want_female):
+            out = []
+            for bp_id, bp in bodypart_map.items():
+                data = bp.get("data") or {}
+                part = (data.get("part") or "")
+                if data.get("bodypart_type") != "Skin":
+                    continue
+                if (bp.get("race") or "").strip().lower() != race:
+                    continue
+                if ("FEMALE" in (data.get("flags") or "")) != want_female:
+                    continue
+                if part.lower() in ("head", "hair"):
+                    continue  # déjà gérés via npc.head / npc.hair
+                if ".1st" in bp_id:
+                    continue  # vue première personne
+                mesh = bp.get("mesh")
+                if mesh and mesh not in seen:
+                    out.append((mesh, part))
+            return out
+
+        found_skins = 0
+        added_parts = set()
+        for mesh, part in _race_skins(is_female):
+            entries.append((mesh, part, True))
+            seen.add(mesh)
+            added_parts.add(part.lower())
+            found_skins += 1
+        if is_female:
+            # Parties sans variante féminine : fallback sur le mâle
+            for mesh, part in _race_skins(False):
+                if part.lower() in added_parts:
+                    continue
                 entries.append((mesh, part, True))
                 seen.add(mesh)
+                added_parts.add(part.lower())
+                found_skins += 1
+
+        # mesh peut contenir un VRAI modèle custom OU un squelette nu
+        # ('base_animKnA.nif') qui embarque lui-même des placeholders :
+        # dans le second cas l'absence de peaux rendrait le NPC invisible.
+        rec_mesh = (rec.get("mesh") or "")
+        uses_placeholder_skeleton = (
+            not rec_mesh
+            or os.path.basename(rec_mesh).lower().startswith("base_anim")
+        )
+        if found_skins == 0 and uses_placeholder_skeleton:
+            NPC_RACE_SKINS_MISSING = True
+            print(f"[!] Aucune peau de race pour "
+                  f"'{rec.get('name') or rec.get('id')}' (race '{race}') : "
+                  "placeholders génériques conservés")
 
     # Déduplication :
     # - (chemin, slot) : un même fichier de pièce peut être référencé par
@@ -326,8 +418,11 @@ def get_or_import_mesh(mesh_relative_path):
 
             # Les squelettes base_anim embarquent des pièces de corps génériques
             # sans UVs ('Tri ...') que le jeu remplace par les peaux de la race.
+            # Si aucune peau de race n'a été trouvée pour ce NPC, on les garde
+            # (NPC visible en mannequin plutôt qu'invisible).
             base_name = os.path.basename(resolved_nif_path).lower()
-            if IMPORT_MODE == "npc" and base_name.startswith("base_anim"):
+            if IMPORT_MODE == "npc" and base_name.startswith("base_anim") \
+                    and not NPC_RACE_SKINS_MISSING:
                 placeholders = [o for o in imported_objs
                                 if o.type == "MESH" and o.name.lower().startswith("tri ")]
                 for obj in placeholders:
