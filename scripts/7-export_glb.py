@@ -32,7 +32,7 @@ output_path = get_arg("output", "morrowind.glb")
 # Séquences à exporter : liste de préfixes (insensible à la casse) ou "all"
 ANIMS_ARG = get_arg(
     "anims",
-    "idle,walkforward,runforward,turnleft,turnright,hit,death,knockdown,knockout,attack,spellcast",
+    "all",
 )
 KEEP_PREFIXES = (
     None
