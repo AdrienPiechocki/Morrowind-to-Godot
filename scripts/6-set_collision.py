@@ -34,5 +34,5 @@ for obj in bpy.data.objects:
 
 print(f"[+] {count} objets > {THRESHOLD} unites renommes avec {SUFFIXE}")
 
-bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+bpy.ops.wm.save_as_mainfile(filepath=blend_path, compress=True)
 print(f"[+] Saved: {blend_path}")

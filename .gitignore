@@ -1,7 +1,6 @@
 mods/
 data/
-!mods/README.md
-!data/README.md
+export/
 tes3conv
 openmw-tools/
 io_scene_mw/

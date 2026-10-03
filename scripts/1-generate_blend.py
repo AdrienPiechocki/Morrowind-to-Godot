@@ -4,9 +4,15 @@ import os
 import re
 import addon_utils
 import bpy
+import math
 import bmesh
 from mathutils import Euler, Vector, Matrix
-
+import base64
+import shutil
+import struct
+import subprocess
+import numpy as np
+import time
 
 # ==========================================
 # Parse CLI arguments (after Blender's --)
@@ -41,10 +47,12 @@ if not loaded_state:
 JSON_FILE_PATH = get_arg("json")
 
 _meshes = get_arg("meshes", r"../data/meshes")
-MESHES_DIRS = [_meshes]
+# Plusieurs dossiers possibles (séparés par os.pathsep), par priorité décroissante :
+# fichiers loose des mods (openmw.cfg) d'abord, cache des BSA en dernier.
+MESHES_DIRS = [p for p in _meshes.split(os.pathsep) if p]
 
 _textures = get_arg("textures", r"../data/textures")
-TEXTURES_DIRS = [_textures]
+TEXTURES_DIRS = [p for p in _textures.split(os.pathsep) if p]
 
 # Morrowind -> Blender scale factor
 SCALE_FACTOR = 0.01
@@ -65,11 +73,47 @@ ROT_SIGN_Z = -1.0
 _cell = get_arg("cell", "Balmora, Temple")
 TARGET_CELL_NAME = None if _cell == "all" else _cell
 
+# Exterior cells : --grid "x,y" ou --grid "x1,y1:x2,y2" (rectangle inclusif).
+# Prioritaire sur --cell. Ex. : Seyda Neen = "-2,-9".
+CELL_SIZE = 8192.0  # côté d'une exterior cell, en unités Morrowind
+
+
+def parse_grid_arg(value):
+    if not value:
+        return None
+    nums = [int(n) for n in re.findall(r"-?\d+", value)]
+    if len(nums) == 2:
+        nums = nums + nums
+    if len(nums) != 4:
+        print(f"[ERROR] --grid invalide : '{value}' (attendu 'x,y' ou 'x1,y1:x2,y2')")
+        sys.exit(1)
+    x1, y1, x2, y2 = nums
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
+TARGET_GRID = parse_grid_arg(get_arg("grid", None))
+
 # Mode npcs : recherche d'un NPC/créature par nom ou id dans toutes les cellules
 TARGET_NPC_NAME = get_arg("npc", None)
 
 # Mode d'import : "cell" (décor statique) ou "npc" (créatures/NPCs animés)
-IMPORT_MODE = get_arg("mode", "cell")
+_mode_arg = get_arg("mode", "cell")
+FULL_MODE = (_mode_arg == "full")
+IMPORT_MODE = "cell" if FULL_MODE else _mode_arg
+if FULL_MODE and TARGET_GRID is None:
+    print("[ERROR] --mode full necessite --grid")
+    sys.exit(1)
+
+# Animations a conserver pour les NPCs/creatures : liste de prefixes (insensible a la
+# casse, separes par des virgules) ou "all". Par defaut : idle uniquement en mode full.
+# Les autres cles d'animation sont supprimees des actions des l'import (fichiers plus
+# legers) ; 7-export_glb.py recoit le meme --anims pour filtrer l'export.
+_anims_arg = get_arg("anims", "idle" if FULL_MODE else "all")
+ANIM_KEEP_PREFIXES = (None if _anims_arg.strip().lower() == "all"
+                      else [a.strip().lower() for a in _anims_arg.split(",") if a.strip()])
+
+# Mode full : dossier de sortie (un .blend par cell)
+FULL_OUTDIR = os.path.abspath(get_arg("outdir", "export"))
 
 # Record types that should not be imported (mode cells)
 EXCLUDED_TYPES = {
@@ -99,6 +143,9 @@ race_map = {}
 
 # Cache of imported meshes
 imported_mesh_cache = {}
+# Meshes impossibles à importer (introuvables, ou l'import a levé une erreur) :
+# clé -> raison. Évite de retenter (et de re-logguer) à chaque référence.
+failed_meshes = {}
 # Instantanés des matrices locales PRISTINES de chaque fichier importé.
 # Indispensable : l'importeur peut réécrire les matrix_local des imports
 # suivants (contamination), on fige donc les valeurs juste après l'import.
@@ -132,6 +179,33 @@ REFERENCEABLE_TYPES = {
     "LeveledItem", "Light", "Lockpick", "MiscItem", "Npc", "Probe",
     "RepairItem", "Static", "Weapon",
 }
+
+
+def cell_is_interior(cell):
+    flags = (cell.get("data") or {}).get("flags")
+    if isinstance(flags, int):
+        return bool(flags & 1)
+    return "INTERIOR" in str(flags).upper()
+
+
+def cell_grid(cell):
+    grid = (cell.get("data") or {}).get("grid") or [0, 0]
+    return int(grid[0]), int(grid[1])
+
+
+def cell_key(cell):
+    """Interieur : son nom. Exterieur : sa grille (le nom d'une exterior n'est pas unique)."""
+    if cell_is_interior(cell):
+        return cell.get("name") or f"Cell_{cell_grid(cell)}"
+    gx, gy = cell_grid(cell)
+    return f"Ext_{gx}_{gy}"
+
+
+def cell_display_label(cell):
+    if cell_is_interior(cell):
+        return cell.get("name") or f"Cell_{cell_grid(cell)}"
+    gx, gy = cell_grid(cell)
+    return f"Ext_{gx}_{gy}"
 
 
 def build_record_map(data):
@@ -206,6 +280,22 @@ def get_default_skeleton(race, is_female):
     return "base_anim_female.nif" if is_female else "base_anim.nif"
 
 
+def _is_robe(item):
+    d = item.get("data") or {}
+    ct = str(d.get("clothing_type") or item.get("clothing_type") or "")
+    return "robe" in ct.lower() or "robe" in (item.get("id") or "").lower()
+
+
+def _layer_zone(slot_type):
+    """Slot de biped -> zone du corps (gauche/droite fusionnés, pauldron = haut du bras)."""
+    z = re.sub(r"[\s_]+", "", slot_type).lower()
+    for prefix in ("left", "right"):
+        if z.startswith(prefix):
+            z = z[len(prefix):]
+            break
+    return {"pauldron": "upperarm"}.get(z, z)
+
+
 def build_npc_mesh_paths(rec):
     """Construit la liste [(chemin_nif, indice_slot)] composant un NPC.
 
@@ -228,11 +318,21 @@ def build_npc_mesh_paths(rec):
         if bp and bp.get("mesh"):
             entries.append((bp["mesh"], hint, True))
 
-    # Vêtements / armures portés
+    # Vêtements / armures portés. Superposition par zone du corps :
+    # robe > armure > vêtement (un vêtement sous une armure est masqué ; une robe
+    # recouvre l'armure). Les pièces sont filtrées individuellement : une chemise
+    # sous un plastron perd son torse mais garde ses manches.
+    layers = []  # (zone, rang, entree, id_objet)
     for _count, item_id in rec.get("inventory", []):
         item = item_map.get(item_id.lower())
         if not item:
             continue  # armes & co : jamais importées (item_map = Clothing/Armor)
+        if item.get("type") == "Armor":
+            rank = 2
+        elif _is_robe(item):
+            rank = 3
+        else:
+            rank = 1
         for biped in item.get("biped_objects", []):
             slot_type = (biped.get("biped_object_type") or "")
             if re.sub(r"[\s_]+", "", slot_type).lower() in ("shield", "weapon"):
@@ -242,7 +342,18 @@ def build_npc_mesh_paths(rec):
                 bp_id = biped.get("female_bodypart")
             bp = bodypart_map.get((bp_id or "").lower())
             if bp and bp.get("mesh"):
-                entries.append((bp["mesh"], slot_type))
+                layers.append((_layer_zone(slot_type), rank,
+                               (bp["mesh"], slot_type), item_id))
+
+    top = {}
+    for zone, rank, _e, _i in layers:
+        top[zone] = max(top.get(zone, 0), rank)
+    for zone, rank, entry, item_id in layers:
+        if rank < top[zone]:
+            print(f"[-] '{item_id}' [{entry[1]}] masqué (zone '{zone}' couverte "
+                  f"par {'une robe' if top[zone] == 3 else 'une armure'})")
+            continue
+        entries.append(entry)
 
     # Peaux de la race (corps nu, mains, pieds...) : remplace les placeholders
     # génériques 'Tri *' du squelette base_anim.
@@ -358,12 +469,30 @@ def resolve_case_insensitive(path):
     return current
 
 
-def find_nif_file(mesh_relative_path):
+# Squelette + animations des NPCs/creatures : doivent venir d'UNE SEULE source coherente.
+# Un base_anim.nif/.kf de mod (Animated Morrowind...) a un repos different du vanilla
+# -> corps etires / decales. Par defaut les mods gardent la priorite ;
+# --vanilla-skeleton force la version du cache BSA (dernier dossier de MESHES_DIRS).
+MOD_SKELETON = "--vanilla-skeleton" not in sys.argv
+# --root-signs : ancien comportement (signes d'axes appliques a la racine de chaque NIF)
+ROOT_SIGNS = "--root-signs" in sys.argv
+# --debug-mesh <fragment> (ou variable d'env MW_DEBUG_MESH, utile avec run.sh) : affiche la hierarchie/rotations des NIF dont le chemin contient <fragment>
+DEBUG_MESH = (get_arg("debug-mesh", "") or os.environ.get("MW_DEBUG_MESH", "")).lower()
+_SKELETON_RE = re.compile(r"(^|/)(x?base_anim[^/]*|skins)\.(nif|kf)$", re.IGNORECASE)
+
+
+def find_nif_file(mesh_relative_path, exclude=()):
+    """Premier fichier trouve par priorite de dossier, en ignorant ceux de `exclude`
+    (deja essayes et en echec) -> permet de retomber sur la version vanilla d'un mod."""
     clean_path = mesh_relative_path.replace("\\", "/")
-    for base_dir in MESHES_DIRS:
+    dirs = MESHES_DIRS
+    if (IMPORT_MODE == "npc" and not MOD_SKELETON and len(MESHES_DIRS) > 1
+            and _SKELETON_RE.search(clean_path)):
+        dirs = [MESHES_DIRS[-1]] + MESHES_DIRS[:-1]   # cache BSA vanilla d'abord
+    for base_dir in dirs:
         full_path = os.path.join(base_dir, clean_path)
         resolved_path = resolve_case_insensitive(full_path)
-        if resolved_path and os.path.isfile(resolved_path):
+        if resolved_path and os.path.isfile(resolved_path) and resolved_path not in exclude:
             return resolved_path
     return None
 
@@ -387,15 +516,118 @@ def ensure_kf_sibling(nif_path):
 # MESH IMPORT
 # ==========================================
 
-def get_or_import_mesh(mesh_relative_path):
+def _clip_name(seq, phase, suffix):
+    base = phase[: -len(suffix)].strip()
+    return f"{seq}_{base}" if base else seq
+
+
+def action_clips(action):
+    """{nom_de_clip: [start, stop]} depuis les pose markers 'Seq: ... Start|Stop'.
+
+    Meme decoupage que split_marker_actions() de 7-export_glb.py : les plages
+    gardees ici sont exactement celles que l'export reconnaitrait."""
+    clips = {}
+    for m in action.pose_markers:
+        if ":" not in m.name:
+            continue
+        seq, phase = (p.strip() for p in m.name.split(":", 1))
+        if phase.endswith("Start"):
+            name = _clip_name(seq, phase, "Start")
+            entry = clips.setdefault(name, [m.frame, None])
+            entry[0] = m.frame if entry[0] is None else min(entry[0], m.frame)
+        elif phase.endswith("Stop"):
+            name = _clip_name(seq, phase, "Stop")
+            entry = clips.setdefault(name, [None, m.frame])
+            entry[1] = m.frame if entry[1] is None else min(entry[1], m.frame)
+    return clips
+
+
+def prune_action_to_prefixes(action, prefixes):
+    """Ne garde dans `action` que les clips dont le nom commence par un des prefixes.
+
+    Supprime les keyframes hors des plages gardees et les pose markers des autres
+    clips. Ne fait rien (et le signale) si aucun clip ne correspond, pour ne jamais
+    detruire une animation par erreur. Retourne (gardes, supprimes) en keyframes."""
+    if not action.pose_markers:
+        return None
+    ranges = []
+    for name, (start, stop) in action_clips(action).items():
+        if start is None or stop is None or stop <= start:
+            continue
+        if any(name.lower().startswith(p) for p in prefixes):
+            ranges.append((start, stop))
+    if not ranges:
+        print(f"[~] Action '{action.name}': aucun clip {prefixes} trouve, animations laissees telles quelles")
+        return None
+
+    kept = removed = 0
+    for layer in action.layers:
+        for strip in layer.strips:
+            for cbag in strip.channelbags:
+                empty = []
+                for fc in cbag.fcurves:
+                    pts = fc.keyframe_points
+                    for i in range(len(pts) - 1, -1, -1):
+                        f = pts[i].co.x
+                        if any(a <= f <= b for a, b in ranges):
+                            kept += 1
+                        else:
+                            pts.remove(pts[i], fast=True)
+                            removed += 1
+                    if len(pts) == 0:
+                        empty.append(fc)
+                    else:
+                        fc.update()
+                for fc in empty:
+                    cbag.fcurves.remove(fc)
+
+    # Marqueurs des clips ecartes
+    for m in list(action.pose_markers):
+        if ":" not in m.name:
+            action.pose_markers.remove(m)
+            continue
+        seq, phase = (p.strip() for p in m.name.split(":", 1))
+        suffix = "Start" if phase.endswith("Start") else ("Stop" if phase.endswith("Stop") else None)
+        if suffix is None or not any(_clip_name(seq, phase, suffix).lower().startswith(p) for p in prefixes):
+            action.pose_markers.remove(m)
+    return kept, removed
+
+
+_PRUNED_ACTIONS = set()
+
+
+def prune_imported_animations(objs):
+    """Applique ANIM_KEEP_PREFIXES aux actions des objets qu'on vient d'importer."""
+    if not ANIM_KEEP_PREFIXES:
+        return
+    for obj in objs:
+        ad = obj.animation_data
+        act = ad.action if ad else None
+        if act is None or act.name in _PRUNED_ACTIONS:
+            continue
+        _PRUNED_ACTIONS.add(act.name)
+        try:
+            res = prune_action_to_prefixes(act, ANIM_KEEP_PREFIXES)
+        except Exception as e:
+            print(f"[-] Prune animations '{act.name}': {type(e).__name__}: {e}")
+            continue
+        if res:
+            print(f"[+] Animations {ANIM_KEEP_PREFIXES}: {res[0]} keyframes gardees, {res[1]} supprimees ({obj.name})")
+
+
+def get_or_import_mesh(mesh_relative_path, _tried=()):
     clean_key = mesh_relative_path.replace("\\", "/").lower()
 
     if clean_key in imported_mesh_cache:
         return imported_mesh_cache[clean_key], imported_mesh_snapshots[clean_key]
+    if clean_key in failed_meshes:
+        return None
 
-    resolved_nif_path = find_nif_file(mesh_relative_path)
+    resolved_nif_path = find_nif_file(mesh_relative_path, _tried)
 
     if resolved_nif_path:
+        if IMPORT_MODE == "npc" and _SKELETON_RE.search(clean_key):
+            print(f"[~] Squelette NPC: {resolved_nif_path}")
         bpy.ops.object.select_all(action="DESELECT")
         objs_before = set(bpy.data.objects)
 
@@ -436,15 +668,21 @@ def get_or_import_mesh(mesh_relative_path):
                     # En mode cells, les clés d'animation du NIF ne servent à rien
                     if not with_animations and obj.animation_data:
                         obj.animation_data_clear()
+                if with_animations:
+                    prune_imported_animations(imported_objs)
 
                 # Figer immédiatement la hiérarchie native du fichier :
                 # parents + matrices locales d'origine, avant que des imports
                 # ultérieurs ne puissent contaminer ces valeurs.
+                bpy.context.view_layer.update()
                 snapshot = {}
                 for obj in imported_objs:
                     snapshot[obj] = {
                         'parent': obj.parent,
                         'matrix_local': obj.matrix_local.copy(),
+                        # Monde tel que l'importeur l'a produit (référence pour les
+                        # objets parentés à un os, dont matrix_local ignore l'os).
+                        'matrix_world': obj.matrix_world.copy(),
                     }
 
                 for obj in imported_objs:
@@ -456,12 +694,42 @@ def get_or_import_mesh(mesh_relative_path):
                 imported_mesh_snapshots[clean_key] = snapshot
                 return imported_objs, snapshot
 
+            reason = "import returned no object"
+
         except Exception as e:
-            print(f"[-] Import error for '{resolved_nif_path}': {e}")
+            # Les messages de l'importeur embarquent toute la traceback : on ne
+            # garde que la dernière ligne utile.
+            lines = [ln.strip() for ln in str(e).splitlines() if ln.strip()]
+            reason = lines[-1] if lines else type(e).__name__
+            print(f"[-] Import error for '{resolved_nif_path}': {reason}")
+            # Supprimer les objets créés à moitié avant l'erreur
+            for obj in [o for o in bpy.data.objects if o not in objs_before]:
+                bpy.data.objects.remove(obj, do_unlink=True)
+
+        # Echec : essayer le meme mesh dans un dossier de priorité inférieure
+        # (ex. version vanilla d'un mesh de mod qui ne s'importe pas).
+        tried = _tried + (resolved_nif_path,)
+        alt = find_nif_file(mesh_relative_path, tried)
+        if alt:
+            print(f"[~] Repli sur '{alt}'")
+            return get_or_import_mesh(mesh_relative_path, tried)
+        failed_meshes[clean_key] = f"{reason} ({resolved_nif_path})"
     else:
         print(f"[-] Mesh file not found on disk: {mesh_relative_path}")
+        failed_meshes[clean_key] = "file not found"
 
     return None
+
+
+def report_failed_meshes():
+    if not failed_meshes:
+        return
+    print()
+    print("=" * 60)
+    print(f"[!] {len(failed_meshes)} mesh(es) skipped (references ignored):")
+    for key, reason in sorted(failed_meshes.items()):
+        print(f"    - {key}: {reason}")
+    print("=" * 60)
 
 
 # ==========================================
@@ -540,6 +808,47 @@ def mirrored_copy(src, cell_collection):
     return dup
 
 
+def _rest_remap(obj, src_arm, dst_arm):
+    """Re-bind au repos d'une piece skinnee : chaque sommet passe de la pose de repos
+    des os de `src_arm` a celle des MEMES os de `dst_arm` (skinning lineaire par poids).
+
+    Un simple delta global ne suffit pas quand les squelettes different en proportions
+    (body replacer, squelette de mod) : le corps serait etire. Retourne False si aucun
+    os commun (l'appelant retombe sur le delta global)."""
+    Ms, Md = src_arm.matrix_world, dst_arm.matrix_world
+    T = {}
+    for vg in obj.vertex_groups:
+        sb = src_arm.data.bones.get(vg.name)
+        db = dst_arm.data.bones.get(vg.name)
+        if sb and db:
+            T[vg.index] = (Md @ db.matrix_local) @ (Ms @ sb.matrix_local).inverted()
+    if not T:
+        return False
+    # Le mesh est partage avec le template (Object.copy() ne duplique pas la donnee) :
+    # on le rend unique avant de deplacer les sommets.
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+    M = obj.matrix_world.copy()
+    Mi = M.inverted()
+    worst = 0.0
+    for v in obj.data.vertices:
+        w = M @ v.co
+        acc, tot = Vector((0.0, 0.0, 0.0)), 0.0
+        for g in v.groups:
+            t = T.get(g.group)
+            if t is not None and g.weight > 0.0:
+                acc += (t @ w) * g.weight
+                tot += g.weight
+        if tot > 1e-6:
+            new = acc / tot
+            worst = max(worst, (new - w).length)
+            v.co = Mi @ new
+    obj.data.update()
+    print(f"[~] Rebind au repos '{obj.name}' {src_arm.name}->{dst_arm.name}: "
+          f"{len(T)} os, deplacement max {worst:.3f} m")
+    return True
+
+
 def place_reference(rec_info, ref, origin_offset, cell_collection):
     """Importe et place les meshes d'une référence. Retourne le nombre d'objets créés."""
     ref_id = ref.get("id", "Unknown_Ref")
@@ -584,7 +893,10 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
             is_skin = bool(entry[2]) if len(entry) > 2 else False
         else:
             mesh_path, slot_hint, is_skin = entry, None, False
-        template_objs, snapshot = get_or_import_mesh(mesh_path)
+        imported = get_or_import_mesh(mesh_path)
+        if not imported:
+            continue  # mesh introuvable ou import en erreur : déjà signalé
+        template_objs, snapshot = imported
 
         if not template_objs:
             continue
@@ -687,6 +999,18 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
             # originale du NIF (instantané pristine, pas la valeur potentiellement
             # contaminée des templates). Signes d'axes appliqués aussi sur la rotation.
             t_root_local = snapshot[t_root]['matrix_local']
+            if not ROOT_SIGNS:
+                # Tous modes : la racine du NIF est deja dans le repere Blender
+                # (l'importeur l'a convertie). Inverser les signes de son euler la
+                # retourne (ex. silt strider nez dans le sol) ; seule la reference
+                # (rotation de la cell) utilise la convention de signes.
+                if t_root_local.to_3x3().to_euler().to_quaternion().angle > 1e-3:
+                    e = t_root_local.to_euler()
+                    print(f"[~] Racine NIF '{t_root.name}' tournee "
+                          f"({math.degrees(e.x):.0f}, {math.degrees(e.y):.0f}, "
+                          f"{math.degrees(e.z):.0f})° : conservee telle quelle")
+                new_root.matrix_world = mat_ref @ t_root_local
+                continue
             nif_euler = t_root_local.to_euler(EULER_ORDER)
             nif_euler_signed = Euler(
                 (nif_euler.x * ROT_SIGN_X, nif_euler.y * ROT_SIGN_Y, nif_euler.z * ROT_SIGN_Z),
@@ -696,6 +1020,44 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
             nif_mat.translation = t_root_local.translation
             nif_mat = nif_mat @ Matrix.Diagonal((*t_root_local.to_scale(), 1.0))
             new_root.matrix_world = mat_ref @ nif_mat
+
+        # Objets parentés à un OS (parent_type='BONE') : matrix_local ignore la
+        # transformation de l'os, donc la restaurer ci-dessus les décale (ex. silt
+        # strider couché a 90°). On recale leur monde sur celui de l'importeur,
+        # exprimé relativement à la racine du NIF. Hors mode npc (les NPCs ont leur
+        # propre gestion des nœuds d'attache).
+        if IMPORT_MODE != "npc":
+            def _root_of(t):
+                while True:
+                    par = snapshot[t]['parent']
+                    if par is None or par not in copied_map:
+                        return t
+                    t = par
+            copied_vals = set(copied_map.values())
+            for t_obj in template_objs:
+                new_obj = copied_map[t_obj]
+                if new_obj.parent_type != 'BONE' or new_obj.parent not in copied_vals:
+                    continue
+                t_root = _root_of(t_obj)
+                if 'matrix_world' not in snapshot[t_obj] or t_root not in copied_map:
+                    continue
+                bpy.context.view_layer.update()
+                new_obj.matrix_world = (copied_map[t_root].matrix_world
+                                        @ snapshot[t_root]['matrix_world'].inverted()
+                                        @ snapshot[t_obj]['matrix_world'])
+                print(f"[~] Objet parenté à un os recalé : '{new_obj.name}' "
+                      f"(os '{new_obj.parent_bone}')")
+
+        if DEBUG_MESH and DEBUG_MESH in mesh_path.lower():
+            bpy.context.view_layer.update()
+            print(f"[DBG] {mesh_path} (ref rot MW = {tuple(round(math.degrees(r), 1) for r in rotation)})")
+            for o in copied_map.values():
+                e = o.matrix_world.to_euler()
+                extra = f" pose={o.data.pose_position}" if o.type == 'ARMATURE' else ""
+                extra += f" ptype={o.parent_type}" + (f"/{o.parent_bone}" if o.parent_bone else "")
+                print(f"[DBG]   {o.type:8s} '{o.name}' parent={o.parent.name if o.parent else None} "
+                      f"rot=({math.degrees(e.x):.0f},{math.degrees(e.y):.0f},{math.degrees(e.z):.0f}) "
+                      f"dims={tuple(round(d, 2) for d in o.dimensions)}{extra}")
 
         # Suppression des squelettes redondants sans animation (ex: celui
         # embarqué dans Skins.NIF) au profit du rig canonique. Se fait APRÈS
@@ -759,7 +1121,8 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                         else:
                             obj.matrix_world = delta @ obj.matrix_world
                     elif any(m.type == 'ARMATURE' for m in obj.modifiers):
-                        obj.matrix_world = delta @ obj.matrix_world
+                        if not _rest_remap(obj, arm, canonical):
+                            obj.matrix_world = delta @ obj.matrix_world
                 # Flush : les matrix_world viennent d'être réécrits, sans
                 # cela les lectures ci-dessous renvoient des valeurs périmées.
                 bpy.context.view_layer.update()
@@ -999,6 +1362,373 @@ def find_npc_references(record_map, seen_cells):
     return hits
 
 
+# ==========================================
+# TERRAIN & EAU (exterior cells)
+# ==========================================
+LAND_N = 65                      # sommets par côté
+LAND_STEP = CELL_SIZE / 64.0     # 128 unités MW
+LAND_HEIGHT_UNIT = 8.0           # les hauteurs MW sont en multiples de 8
+
+landscape_map = {}               # (gx, gy) -> record Landscape
+ltex_map = {}                    # index LTEX -> file_name
+terrain_mat_cache = {}
+water_mat = None
+
+
+def build_landscape_maps(data):
+    # data est dans l'ordre de chargement : le dernier gagne
+    for rec in data:
+        t = rec.get("type")
+        if t == "Landscape" and rec.get("grid"):
+            g = rec["grid"]
+            landscape_map[(int(g[0]), int(g[1]))] = rec
+        elif t == "LandscapeTexture":
+            ltex_map[int(rec.get("index", 0))] = rec.get("file_name", "")
+    print(f"[+] Landscape: {len(landscape_map)} | LTEX: {len(ltex_map)}")
+
+
+LAND_TEX_CHUNKED = True
+
+
+def _unwrap(v):
+    if isinstance(v, dict) and "data" in v:
+        return v["data"]
+    return v
+
+
+def _zstd_decompress(raw):
+    try:
+        from compression import zstd            # Python 3.14+
+        return zstd.decompress(raw)
+    except ImportError:
+        pass
+    try:
+        import zstandard
+        return zstandard.ZstdDecompressor().decompressobj().decompress(raw)
+    except ImportError:
+        pass
+    exe = shutil.which("zstd")
+    if not exe:
+        raise RuntimeError("zstd introuvable : `sudo pacman -S zstd` ou `pip install zstandard`")
+    return subprocess.run([exe, "-d", "-c", "-q"], input=raw,
+                          stdout=subprocess.PIPE, check=True).stdout
+
+
+def _numbers(v, fmt):
+    """Liste plate de nombres depuis un champ tes3conv.
+    fmt : 'b' int8, 'B' uint8, 'H' uint16 (little endian).
+    Accepte un blob base64(+zstd) ou un tableau JSON (éventuellement imbriqué)."""
+    v = _unwrap(v)
+    if v is None:
+        return None
+    if isinstance(v, str):
+        raw = base64.b64decode(v)
+        if raw[:4] == b"\x28\xb5\x2f\xfd":
+            raw = _zstd_decompress(raw)
+        size = struct.calcsize(fmt)
+        n = len(raw) // size
+        return list(struct.unpack(f"<{n}{fmt}", raw[:n * size]))
+    out = []
+    def rec(x):
+        if isinstance(x, (list, tuple)):
+            for i in x:
+                rec(i)
+        else:
+            out.append(x)
+    rec(v)
+    return out
+
+
+def decode_heights(land):
+    N = LAND_N
+    flat = [[0.0] * N for _ in range(N)]
+    vh = land.get("vertex_heights")
+    if not vh:
+        return flat
+    offset = float(vh.get("offset", 0.0)) if isinstance(vh, dict) else 0.0
+    nums = _numbers(vh, "b")
+    if not nums or len(nums) < N * N:
+        print(f"[!] vertex_heights inattendu ({0 if not nums else len(nums)} valeurs), terrain plat")
+        return flat
+    row_start = offset
+    for y in range(N):
+        row = nums[y * N:(y + 1) * N]
+        row_start += row[0]              # delta par rapport au début de la rangée précédente
+        v = row_start
+        flat[y][0] = v * LAND_HEIGHT_UNIT
+        for x in range(1, N):
+            v += row[x]                  # delta par rapport au sommet précédent
+            flat[y][x] = v * LAND_HEIGHT_UNIT
+    return flat
+
+
+def load_land_image(file_name):
+    if not file_name:
+        return None
+    clean = file_name.replace("\\", "/")
+    base = os.path.splitext(clean)[0]
+    candidates = [clean] + [base + e for e in (".dds", ".tga", ".png", ".bmp")]
+    for d in TEXTURES_DIRS:
+        for c in candidates:
+            p = resolve_case_insensitive(os.path.join(d, c))
+            if p and os.path.isfile(p):
+                img = bpy.data.images.load(p, check_existing=True)
+                try:
+                    if not img.packed_file:
+                        img.pack()
+                except Exception:
+                    pass
+                return img
+    print(f"[-] Land texture not found: {file_name}")
+    return None
+
+
+def get_terrain_material(vtex):
+    """vtex : valeur de texture_indices (0 = défaut, sinon index LTEX + 1)."""
+    if vtex in terrain_mat_cache:
+        return terrain_mat_cache[vtex]
+    file_name = "_land_default.dds" if vtex == 0 else ltex_map.get(vtex - 1, "")
+    stem = os.path.splitext(os.path.basename(file_name))[0] or f"idx{vtex}"
+    mat = bpy.data.materials.new(f"LAND_{stem}")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes.get("Principled BSDF")
+    bsdf.inputs["Roughness"].default_value = 1.0
+    bsdf.inputs["IOR"].default_value = 1.0
+    img = load_land_image(file_name)
+    if img:
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.image = img
+        attr = nt.nodes.new("ShaderNodeAttribute")
+        attr.attribute_name = "Col"
+        mix = nt.nodes.new("ShaderNodeMixRGB")
+        mix.blend_type = "MULTIPLY"
+        mix.inputs[0].default_value = 1.0
+        nt.links.new(tex.outputs["Color"], mix.inputs[1])
+        nt.links.new(attr.outputs["Color"], mix.inputs[2])
+        nt.links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+    else:
+        bsdf.inputs["Base Color"].default_value = (0.25, 0.3, 0.15, 1.0)
+    terrain_mat_cache[vtex] = mat
+    return mat
+
+LAND_TILE_PX = 128      # pixels par tuile (16x16 tuiles) -> image de 2048x2048 par cell
+                        # 64 pour tester vite, 256 pour plus de netteté (lourd)
+land_layer_cache = {}   # vtex -> (T,T,4) float32 ou None
+
+
+def decode_texture_grid(land):
+    tn = _numbers(land.get("texture_indices"), "H")
+    if not tn or len(tn) < 256:
+        return None
+    if LAND_TEX_CHUNKED:
+        ti = [[0] * 16 for _ in range(16)]
+        k = 0
+        for y1 in range(4):
+            for x1 in range(4):
+                for y2 in range(4):
+                    for x2 in range(4):
+                        ti[y1 * 4 + y2][x1 * 4 + x2] = tn[k]
+                        k += 1
+        return ti
+    return [tn[y * 16:(y + 1) * 16] for y in range(16)]
+
+
+def _layer_pixels(vtex):
+    """Pixels (T,T,4) float32 de la texture de terrain vtex, ou None."""
+    if vtex in land_layer_cache:
+        return land_layer_cache[vtex]
+    T = LAND_TILE_PX
+    file_name = "_land_default.dds" if vtex == 0 else ltex_map.get(vtex - 1, "")
+    img = load_land_image(file_name)
+    px = None
+    if img:
+        tmp = None
+        try:
+            tmp = img.copy()
+            tmp.scale(T, T)
+            buf = np.empty(T * T * 4, dtype=np.float32)
+            tmp.pixels.foreach_get(buf)
+            px = buf.reshape(T, T, 4)
+        except Exception as e:
+            print(f"[-] Land texture unreadable '{file_name}': {e}")
+        finally:
+            if tmp:
+                bpy.data.images.remove(tmp)
+        if img.users == 0:               # image chargée uniquement pour le bake
+            bpy.data.images.remove(img)
+    land_layer_cache[vtex] = px
+    return px
+
+
+def _bilinear(A, T):
+    """A: (17,17) valeurs aux coins de tuiles -> (16T,16T) interpolé."""
+    S = 16 * T
+    c = (np.arange(S, dtype=np.float32) + 0.5) / T
+    i0 = np.minimum(c.astype(np.int32), 15)
+    f = (c - i0).astype(np.float32)
+    y0, x0 = i0[:, None], i0[None, :]
+    fy, fx = f[:, None], f[None, :]
+    a00, a01 = A[y0, x0], A[y0, x0 + 1]
+    a10, a11 = A[y0 + 1, x0], A[y0 + 1, x0 + 1]
+    return (a00 * (1 - fx) + a01 * fx) * (1 - fy) + (a10 * (1 - fx) + a11 * fx) * fy
+
+
+def bake_terrain_image(ti, gx, gy):
+    T = LAND_TILE_PX
+    S = 16 * T
+    # Ordre de superposition : la couche la plus etendue sert de base, les plus petites
+    # sont peintes PAR-DESSUS. Sinon (tri par index), une grande zone peinte apres une
+    # petite recouvre les coins partages et la ronge de l'exterieur vers l'interieur.
+    counts = {}
+    for row in ti:
+        for v in row:
+            counts[int(v)] = counts.get(int(v), 0) + 1
+    layers = sorted(counts, key=lambda vt: (-counts[vt], vt))
+    out = None
+    for vt in layers:
+        tex = _layer_pixels(vt)
+        if tex is None:
+            tex = np.empty((T, T, 4), dtype=np.float32)
+            tex[:] = (0.25, 0.3, 0.15, 1.0)
+        tiled = np.tile(tex, (16, 16, 1))            # une répétition par tuile
+        if out is None:
+            out = tiled                              # couche de base
+            continue
+        A = np.zeros((17, 17), dtype=np.float32)
+        for ty in range(16):
+            for tx in range(16):
+                if ti[ty][tx] == vt:
+                    A[ty:ty + 2, tx:tx + 2] = 1.0    # les 4 coins de la tuile
+        alpha = _bilinear(A, T)[..., None]
+        out += (tiled - out) * alpha
+    out[..., 3] = 1.0
+
+    img = bpy.data.images.new(f"LandBake_{gx}_{gy}", S, S, alpha=False)
+    img.pixels.foreach_set(out.ravel())
+    img.update()
+    img.pack()
+    return img
+
+
+def make_baked_material(img, gx, gy):
+    mat = bpy.data.materials.new(f"LAND_{gx}_{gy}")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes.get("Principled BSDF")
+    bsdf.inputs["Roughness"].default_value = 1.0
+    bsdf.inputs["IOR"].default_value = 1.0
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    attr = nt.nodes.new("ShaderNodeAttribute")
+    attr.attribute_name = "Col"
+    mix = nt.nodes.new("ShaderNodeMixRGB")
+    mix.blend_type = "MULTIPLY"
+    mix.inputs[0].default_value = 1.0
+    nt.links.new(tex.outputs["Color"], mix.inputs[1])
+    nt.links.new(attr.outputs["Color"], mix.inputs[2])
+    nt.links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+    return mat
+
+def build_terrain(land, origin_offset, collection):
+    gx, gy = int(land["grid"][0]), int(land["grid"][1])
+    heights = decode_heights(land)
+    N = LAND_N
+
+    verts = []
+    for y in range(N):
+        for x in range(N):
+            w = Vector((gx * CELL_SIZE + x * LAND_STEP,
+                        gy * CELL_SIZE + y * LAND_STEP,
+                        heights[y][x]))
+            verts.append(w * SCALE_FACTOR - origin_offset)
+
+    faces = []
+    for y in range(N - 1):
+        for x in range(N - 1):
+            i = y * N + x
+            faces.append((i, i + 1, i + N + 1, i + N))
+
+    mesh = bpy.data.meshes.new(f"Terrain_{gx}_{gy}")
+    mesh.from_pydata([tuple(v) for v in verts], [], faces)
+    mesh.update()
+
+    # Texture bakée (blend façon moteur) ; fallback sur la texture par défaut
+    ti = decode_texture_grid(land)
+    if ti:
+        mesh.materials.append(make_baked_material(bake_terrain_image(ti, gx, gy), gx, gy))
+    else:
+        mesh.materials.append(get_terrain_material(0))
+
+    # UV : une seule image pour toute la cell
+    uv = mesh.uv_layers.new(name="UVMap")
+    for poly in mesh.polygons:
+        for li, vi in zip(poly.loop_indices, poly.vertices):
+            uv.data[li].uv = ((vi % N) / 64.0, (vi // N) / 64.0)
+
+    cn = _numbers(land.get("vertex_colors"), "B")
+    if cn and len(cn) >= N * N * 3:
+        ca = mesh.color_attributes.new("Col", "FLOAT_COLOR", "POINT")
+        for i in range(N * N):
+            ca.data[i].color = (cn[i * 3] / 255.0, cn[i * 3 + 1] / 255.0,
+                                cn[i * 3 + 2] / 255.0, 1.0)
+
+    try:
+        mesh.shade_smooth()
+    except AttributeError:
+        for p in mesh.polygons:
+            p.use_smooth = True
+
+    obj = bpy.data.objects.new(f"Terrain_{gx}_{gy}", mesh)
+    collection.objects.link(obj)
+    return obj
+
+
+def get_water_material():
+    global water_mat
+    if water_mat:
+        return water_mat
+    m = bpy.data.materials.new("Water")
+    m.use_nodes = True
+    b = m.node_tree.nodes.get("Principled BSDF")
+    b.inputs["Base Color"].default_value = (0.025, 0.095, 0.130, 1.0)
+    b.inputs["Alpha"].default_value = 0.15
+    b.inputs["Roughness"].default_value = 0.05
+    if hasattr(m, "blend_method"):
+        try:
+            m.blend_method = "BLEND"
+        except Exception:
+            pass
+    water_mat = m
+    return m
+
+
+def build_water(gx, gy, level, origin_offset, collection):
+    z = level * SCALE_FACTOR
+    x0, y0 = gx * CELL_SIZE * SCALE_FACTOR, gy * CELL_SIZE * SCALE_FACTOR
+    x1, y1 = x0 + CELL_SIZE * SCALE_FACTOR, y0 + CELL_SIZE * SCALE_FACTOR
+    vs = [Vector(p) - origin_offset for p in
+          ((x0, y0, z), (x1, y0, z), (x1, y1, z), (x0, y1, z))]
+    mesh = bpy.data.meshes.new(f"Water_{gx}_{gy}")
+    mesh.from_pydata([tuple(v) for v in vs], [], [(0, 1, 2, 3)])
+    mesh.update()
+    mesh.materials.append(get_water_material())
+    obj = bpy.data.objects.new(f"Water_{gx}_{gy}", mesh)
+    collection.objects.link(obj)
+    return obj
+
+
+def build_exterior_ground(cell, origin_offset, collection):
+    gx, gy = cell_grid(cell)
+    land = landscape_map.get((gx, gy))
+    if land:
+        build_terrain(land, origin_offset, collection)
+    else:
+        print(f"[~] No LAND record for cell ({gx},{gy})")
+    wh = cell.get("water_height")
+    build_water(gx, gy, float(wh) if wh is not None else 0.0, origin_offset, collection)
+
+
 def rebuild_npc_by_name(record_map, seen_cells):
     """Mode npcs + --npc : importe toutes les occurrences du NPC cherché,
     centrées sur la première trouvaille."""
@@ -1073,7 +1803,8 @@ def rebuild_cells_in_blender():
     data = load_tes3_json(JSON_FILE_PATH)
     record_map = build_record_map(data)
     build_npc_lookup_maps(data)
-
+    build_landscape_maps(data)
+    
     cell_count = 0
     object_count = 0
 
@@ -1083,12 +1814,34 @@ def rebuild_cells_in_blender():
     for record in data:
         if record.get("type") != "Cell":
             continue
-        cell_key = record.get("name") or f"Cell_{record.get('data', {}).get('grid')}"
-        seen_cells[cell_key] = record
+        seen_cells[cell_key(record)] = record
 
     # Filtrer par cellule cible si specifiee
-    if TARGET_CELL_NAME is not None:
-        cells_to_process = [seen_cells[TARGET_CELL_NAME]] if TARGET_CELL_NAME in seen_cells else []
+    grid_origin = Vector((0.0, 0.0, 0.0))
+    if TARGET_GRID is not None:
+        gx1, gy1, gx2, gy2 = TARGET_GRID
+        cells_to_process = sorted(
+            (c for c in seen_cells.values()
+             if not cell_is_interior(c)
+             and gx1 <= cell_grid(c)[0] <= gx2
+             and gy1 <= cell_grid(c)[1] <= gy2),
+            key=lambda c: (cell_grid(c)[1], cell_grid(c)[0]))
+        expected = (gx2 - gx1 + 1) * (gy2 - gy1 + 1)
+        print(f"[+] Exterior grid {TARGET_GRID}: {len(cells_to_process)}/{expected} cell(s) found")
+        # Origine commune a toutes les cells : centre du rectangle demande
+        # (le niveau de la mer reste a z=0, les cells restent alignees)
+        grid_origin = Vector((
+            (gx1 + gx2 + 1) / 2.0 * CELL_SIZE,
+            (gy1 + gy2 + 1) / 2.0 * CELL_SIZE,
+            0.0)) * SCALE_FACTOR
+    elif TARGET_CELL_NAME is not None:
+        if TARGET_CELL_NAME in seen_cells:
+            cells_to_process = [seen_cells[TARGET_CELL_NAME]]
+        else:
+            # Exterior nommee ("Seyda Neen"...) : correspondance par nom
+            cells_to_process = [c for c in seen_cells.values()
+                                if not cell_is_interior(c)
+                                and c.get("name") == TARGET_CELL_NAME]
     else:
         cells_to_process = list(seen_cells.values())
 
@@ -1097,8 +1850,12 @@ def rebuild_cells_in_blender():
         rebuild_npc_by_name(record_map, seen_cells)
         return
 
+    if FULL_MODE:
+        rebuild_full(cells_to_process, grid_origin, record_map, seen_cells)
+        return
+
     for cell in cells_to_process:
-        cell_label = cell.get("name") or f"Cell_{cell.get('data', {}).get('grid')}"
+        cell_label = cell_display_label(cell)
         collection_name = f"MW_{cell_label}"
 
         print()
@@ -1115,22 +1872,29 @@ def rebuild_cells_in_blender():
         cell_count += 1
         references = cell.get("references", [])
 
-        # Trouver la position de la premiere reference pour centrer la cellule
+        # Interieur : centrer sur la premiere reference.
+        # Exterieur (--grid) : origine commune a toutes les cells.
         origin_offset = Vector((0.0, 0.0, 0.0))
-        for ref in references:
-            if ref.get("deleted", False):
-                continue
-            ref_id = ref.get("id", "Unknown_Ref")
-            rec_info = record_map.get(ref_id.lower(), {})
-            if not should_import(rec_info.get("type")):
-                continue
-            if not rec_info.get("mesh"):
-                continue
-            origin_offset = Vector(ref.get("translation", [0.0, 0.0, 0.0])) * SCALE_FACTOR
-            break
+        if TARGET_GRID is not None:
+            origin_offset = grid_origin
+        else:
+            for ref in references:
+                if ref.get("deleted", False):
+                    continue
+                ref_id = ref.get("id", "Unknown_Ref")
+                rec_info = record_map.get(ref_id.lower(), {})
+                if not should_import(rec_info.get("type")):
+                    continue
+                if not rec_info.get("mesh"):
+                    continue
+                origin_offset = Vector(ref.get("translation", [0.0, 0.0, 0.0])) * SCALE_FACTOR
+                break
 
         print(f"[+] References in cell: {len(references)}")
         print(f"[+] Origin offset: {origin_offset[:]}" if origin_offset.length > 0 else "[+] No offset (already centered)")
+
+        if IMPORT_MODE != "npc" and not cell_is_interior(cell):
+            build_exterior_ground(cell, origin_offset, cell_collection)
 
         for ref in references:
             if ref.get("deleted", False):
@@ -1157,25 +1921,354 @@ def rebuild_cells_in_blender():
     print(f"[+] Cached meshes: {len(imported_mesh_cache)}")
     print("=" * 60)
 
+# ==========================================
+# MODE FULL : exterieur + interieurs (via les portes) + NPCs
+# ==========================================
+# Colle ce bloc juste avant la section "# TEXTURES" de 1-generate_blend.py.
+# (necessite `import time` en haut du fichier)
+
+INTERIOR_MAX_DEPTH = int(get_arg("interior_depth", 3))  # portes interieur -> interieur suivies
+FULL_WITH_NPCS = get_arg("npcs", "1") != "0"             # --npcs 0 : ignorer les NPCs
+
+
+def _set_import_mode(mode):
+    """Bascule entre 'cell' (decor statique) et 'npc' (NPCs/creatures)."""
+    global IMPORT_MODE
+    IMPORT_MODE = mode
+
+
+_SCRATCH = None
+
+
+def _scratch_collection():
+    global _SCRATCH
+    if _SCRATCH is None or _SCRATCH.name not in bpy.data.collections:
+        _SCRATCH = bpy.data.collections.new("MW_scratch")
+        bpy.context.scene.collection.children.link(_SCRATCH)
+    return _SCRATCH
+
+
+class _IsolatedView:
+    """Exclut du view layer toutes les collections sauf `keep`.
+
+    Chaque ajout/suppression d'objet force Blender a reconstruire le depsgraph de
+    TOUTE la scene ; un NPC en fait des dizaines, d'ou des minutes par NPC quand
+    l'exterieur contient des centaines d'objets. Isole, le depsgraph ne contient
+    plus que le NPC en cours."""
+
+    def __init__(self, keep):
+        self.keep = keep
+        self.saved = []
+        self.prev_active = None
+
+    def __enter__(self):
+        vl = bpy.context.view_layer
+        self.prev_active = vl.active_layer_collection
+        for lc in vl.layer_collection.children:
+            if lc.collection is self.keep:
+                vl.active_layer_collection = lc   # l'importeur NIF cree ses objets ici
+                continue
+            self.saved.append((lc, lc.exclude))
+            lc.exclude = True
+        return self
+
+    def __exit__(self, *exc):
+        vl = bpy.context.view_layer
+        for lc, was_excluded in self.saved:
+            lc.exclude = was_excluded
+        if self.prev_active is not None:
+            try:
+                vl.active_layer_collection = self.prev_active
+            except Exception:
+                pass
+        vl.update()
+
+
+def import_cell_refs(cell, record_map, origin_offset, collection, with_npcs=True):
+    """Decor statique puis NPCs/creatures d'une cell. Retourne le nombre d'objets."""
+    refs = [r for r in (cell.get("references") or []) if not r.get("deleted", False)]
+    count = 0
+
+    _set_import_mode("cell")
+    for ref in refs:
+        rec_info = record_map.get((ref.get("id") or "").lower(), {})
+        if not should_import(rec_info.get("type")):
+            continue
+        count += place_reference(rec_info, ref, origin_offset, collection)
+
+    if not with_npcs:
+        return count
+
+    _set_import_mode("npc")
+    try:
+        npc_refs = []
+        for ref in refs:
+            rec_info = record_map.get((ref.get("id") or "").lower(), {})
+            if should_import(rec_info.get("type")):
+                npc_refs.append((ref, rec_info))
+        if not npc_refs:
+            return count
+
+        # Un NPC a la fois dans une collection vide et isolee :
+        #  - depsgraph minuscule (rapide) ;
+        #  - le remplacement "peau -> vetement" de place_reference parcourt toute la
+        #    collection : sur une collection partagee il supprimerait les parties de
+        #    peau des NPCs precedents de la meme race.
+        scratch = _scratch_collection()
+        t_all = time.time()
+        with _IsolatedView(scratch):
+            for i, (ref, rec_info) in enumerate(npc_refs, 1):
+                t0 = time.time()
+                count += place_reference(rec_info, ref, origin_offset, scratch)
+                for obj in list(scratch.objects):
+                    collection.objects.link(obj)
+                    scratch.objects.unlink(obj)
+                label = rec_info.get("name") or rec_info.get("id")
+                print(f"    [NPC {i}/{len(npc_refs)}] {label}: {time.time() - t0:.1f}s", flush=True)
+        print(f"    [NPC] {len(npc_refs)} importe(s) en {time.time() - t_all:.1f}s", flush=True)
+    finally:
+        _set_import_mode("cell")
+    return count
+
+
+def find_interior_doors(cell, record_map, interiors_by_name):
+    """[(ref, nom_interieur, destination)] des portes qui menent a un interieur.
+
+    `destination` est le dict 'destination' de la reference (translation + rotation
+    du point d'arrivee dans l'interieur)."""
+    out = []
+    for ref in cell.get("references") or []:
+        if ref.get("deleted", False):
+            continue
+        dest = ref.get("destination")
+        if not isinstance(dest, dict):
+            continue
+        name = (dest.get("cell") or "").strip()
+        if not name or name.lower() not in interiors_by_name:
+            continue  # porte vers l'exterieur (ou cell inconnue)
+        rec_info = record_map.get((ref.get("id") or "").lower(), {})
+        if rec_info.get("type") != "Door":
+            continue
+        out.append((ref, name, dest))
+    return out
+
+
+def reset_scene():
+    """Repart d'une scene vide entre deux fichiers : objets, collections, donnees
+    orphelines (meshes, materiaux, images, armatures, actions) et caches lies a Blender."""
+    global _SCRATCH, water_mat, NPC_RACE_SKINS_MISSING
+    for obj in list(bpy.data.objects):          # y compris les templates du cache d'import
+        bpy.data.objects.remove(obj, do_unlink=True)
+    for coll in list(bpy.data.collections):
+        bpy.data.collections.remove(coll)
+    imported_mesh_cache.clear()
+    imported_mesh_snapshots.clear()
+    GLOBAL_TEMPLATE_COPY_MAP.clear()
+    terrain_mat_cache.clear()
+    _PRUNED_ACTIONS.clear()
+    water_mat = None
+    _SCRATCH = None
+    NPC_RACE_SKINS_MISSING = False
+    try:
+        bpy.data.orphans_purge(do_recursive=True)
+    except TypeError:
+        bpy.data.orphans_purge()
+    bpy.context.view_layer.update()
+
+
+def finalize_and_save(path):
+    """Corrige les textures puis ecrit la scene courante dans `path` (.blend compresse)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    print(f"[+] Fixing textures + saving {path}")
+    fix_missing_textures()
+    # Le mode REST n'etait necessaire que pour les calculs de bake : le restaurer,
+    # sinon l'armature reste evaluee au repos (T-Pose figee).
+    for arm in bpy.data.armatures:
+        if arm.pose_position != 'POSE':
+            arm.pose_position = 'POSE'
+    bpy.ops.wm.save_as_mainfile(filepath=path, compress=True, copy=True)
+
+
+def _safe_stem(name, used):
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_.")[:80] or "interior"
+    stem, n = base, 2
+    while stem.lower() in used:
+        stem = f"{base}_{n}"
+        n += 1
+    used.add(stem.lower())
+    return stem
+
+
+def _r(v, nd=4):
+    return [round(float(x), nd) for x in v]
+
+
+def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
+    """Mode full : un .blend pour l'exterieur + un .blend par interieur atteignable.
+
+    export/exterior.blend            exterieur (terrain, eau, decor, NPCs)
+    export/interiors/<nom>.blend     un interieur, origine = point d'arrivee de la 1re porte
+    export/manifest.json             portes : exterieur/interieur <-> interieur, positions
+    export/files.txt                 liste des fichiers (sans extension) pour run.sh
+    """
+    print()
+    print("=" * 60)
+    print("[+] FULL MODE : exterior + interiors + NPCs (un .blend par cell)")
+    print("=" * 60)
+
+    # Sorties precedentes de ce dossier (gere par ce script) : on repart de zero
+    shutil.rmtree(os.path.join(FULL_OUTDIR, "interiors"), ignore_errors=True)
+    for old in ("exterior.blend", "exterior.glb", "manifest.json", "files.txt"):
+        try:
+            os.remove(os.path.join(FULL_OUTDIR, old))
+        except OSError:
+            pass
+    os.makedirs(os.path.join(FULL_OUTDIR, "interiors"), exist_ok=True)
+
+    interiors_by_name = {}
+    for c in seen_cells.values():
+        if cell_is_interior(c) and c.get("name"):
+            interiors_by_name[c["name"].lower()] = c
+
+    produced = []                      # chemins sans extension, relatifs a FULL_OUTDIR
+    object_count = 0
+    t_start = time.time()
+
+    # ---------- 1. Exterieur ----------
+    queue = []   # (nom, porte, destination, 'exterior'|nom parent, position porte, profondeur)
+    seen_doors = 0
+    for cell in cells_to_process:
+        label = cell_display_label(cell)
+        coll = bpy.data.collections.new(f"MW_{label}"[:60])
+        bpy.context.scene.collection.children.link(coll)
+        print(f"[+] Exterior cell {label} ({len(cell.get('references') or [])} refs)")
+        build_exterior_ground(cell, grid_origin, coll)
+        object_count += import_cell_refs(cell, record_map, grid_origin, coll, FULL_WITH_NPCS)
+
+        for ref, name, dest in find_interior_doors(cell, record_map, interiors_by_name):
+            seen_doors += 1
+            p = Vector(ref.get("translation", [0.0, 0.0, 0.0])) * SCALE_FACTOR - grid_origin
+            queue.append((name, ref, dest, "exterior", p, 1))
+
+    finalize_and_save(os.path.join(FULL_OUTDIR, "exterior.blend"))
+    produced.append("exterior")
+    reset_scene()
+
+    print(f"[+] {seen_doors} porte(s) vers un interieur dans l'exterieur")
+    if seen_doors == 0:
+        print("[!] Aucune porte trouvee : verifie le champ 'destination' des references "
+              "(jq '.[]|select(.type==\"Cell\")|.references[]|select(.destination)' output.json | head)")
+
+    # ---------- 2. Interieurs (BFS) : un fichier chacun ----------
+    manifest_interiors = {}            # nom en minuscules -> entree du manifest
+    origins = {}                       # nom en minuscules -> origin_offset (Vector)
+    used_stems = set()
+    while queue:
+        name, door_ref, dest, parent, door_pos, depth = queue.pop(0)
+        key = name.lower()
+        arrival = Vector(dest.get("translation") or [0.0, 0.0, 0.0]) * SCALE_FACTOR
+
+        if key in manifest_interiors:
+            # Interieur deja exporte : on note juste cette porte supplementaire
+            manifest_interiors[key]["doors"].append({
+                "from": parent,
+                "door_id": door_ref.get("id"),
+                "door_position": _r(door_pos),
+                "arrival_position": _r(arrival - origins[key]),
+                "arrival_rotation": _r(dest.get("rotation") or [0.0, 0.0, 0.0]),
+            })
+            continue
+
+        cell = interiors_by_name[key]
+        stem = _safe_stem(name, used_stems)
+        origin_offset = arrival.copy()   # le point d'arrivee de la 1re porte = origine du fichier
+        origins[key] = origin_offset
+
+        t0 = time.time()
+        coll = bpy.data.collections.new(f"MW_{name}"[:60])
+        bpy.context.scene.collection.children.link(coll)
+        print(f"[+] Interior '{name}' (depth {depth}, {len(cell.get('references') or [])} refs) -> interiors/{stem}.blend")
+        object_count += import_cell_refs(cell, record_map, origin_offset, coll, FULL_WITH_NPCS)
+
+        finalize_and_save(os.path.join(FULL_OUTDIR, "interiors", stem + ".blend"))
+        produced.append(f"interiors/{stem}")
+        reset_scene()
+        print(f"    [+] '{name}' termine en {time.time() - t0:.1f}s ({len(produced) - 1} interieur(s) faits)", flush=True)
+
+        manifest_interiors[key] = {
+            "name": name,
+            "file": f"interiors/{stem}",
+            "depth": depth,
+            "doors": [{
+                "from": parent,
+                "door_id": door_ref.get("id"),
+                "door_position": _r(door_pos),
+                "arrival_position": [0.0, 0.0, 0.0],
+                "arrival_rotation": _r(dest.get("rotation") or [0.0, 0.0, 0.0]),
+            }],
+        }
+
+        # Portes interieur -> interieur : position de la porte dans CE fichier
+        if depth < INTERIOR_MAX_DEPTH:
+            for ref, nxt, nxt_dest in find_interior_doors(cell, record_map, interiors_by_name):
+                p = Vector(ref.get("translation", [0.0, 0.0, 0.0])) * SCALE_FACTOR - origin_offset
+                queue.append((nxt, ref, nxt_dest, name, p, depth + 1))
+
+    # ---------- 3. Manifest + liste de fichiers ----------
+    manifest = {
+        "scale": SCALE_FACTOR,
+        "notes": "Positions en metres, repere Blender (Z haut), dans le fichier indique. "
+                 "Chaque interieur a son origine sur le point d'arrivee de sa premiere porte ; "
+                 "'arrival_position' donne le point d'arrivee de chaque porte dans le fichier de l'interieur.",
+        "exterior": {
+            "file": "exterior",
+            "grid": list(TARGET_GRID),
+            "origin_mw": _r(grid_origin / SCALE_FACTOR, 2),
+        },
+        "interiors": list(manifest_interiors.values()),
+    }
+    with open(os.path.join(FULL_OUTDIR, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(FULL_OUTDIR, "files.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(produced) + "\n")
+
+    print()
+    print("=" * 60)
+    print("[+] FULL RECONSTRUCTION COMPLETE")
+    print("=" * 60)
+    print(f"[+] Exterior cells: {len(cells_to_process)}")
+    print(f"[+] Interiors:      {len(manifest_interiors)}")
+    print(f"[+] Objects:        {object_count}")
+    print(f"[+] Files:          {len(produced)} .blend dans {FULL_OUTDIR}")
+    print(f"[+] Time:           {time.time() - t_start:.0f}s")
+    print("=" * 60)
+
 
 # ==========================================
 # TEXTURES
 # ==========================================
 
+_TEX_INDEX = None
+
+
 def fix_missing_textures():
     rebound_count = 0
 
-    # Construire un index recursif de toutes les textures disponibles
-    tex_index = {}
-    for tex_dir in TEXTURES_DIRS:
-        resolved_dir = resolve_case_insensitive(tex_dir)
-        if not resolved_dir or not os.path.isdir(resolved_dir):
-            continue
-        for root, _dirs, files in os.walk(resolved_dir):
-            for f in files:
-                key = f.lower()
-                if key not in tex_index:
-                    tex_index[key] = os.path.join(root, f)
+    # Index recursif de toutes les textures disponibles (construit une seule fois :
+    # en mode full cette fonction est appelee une fois par .blend)
+    global _TEX_INDEX
+    if _TEX_INDEX is None:
+        _TEX_INDEX = {}
+        for tex_dir in TEXTURES_DIRS:
+            resolved_dir = resolve_case_insensitive(tex_dir)
+            if not resolved_dir or not os.path.isdir(resolved_dir):
+                continue
+            for root, _dirs, files in os.walk(resolved_dir):
+                for f in files:
+                    key = f.lower()
+                    if key not in _TEX_INDEX:
+                        _TEX_INDEX[key] = os.path.join(root, f)
+    tex_index = _TEX_INDEX
 
     for img in bpy.data.images:
         raw_path = img.filepath.replace("\\", "/")
@@ -1234,21 +2327,23 @@ for obj in list(bpy.data.objects):
     bpy.data.objects.remove(obj)
 
 rebuild_cells_in_blender()
+report_failed_meshes()
 
-print()
-print("[+] Fixing missing textures...")
-fix_missing_textures()
+if not FULL_MODE:   # en mode full, chaque .blend est ecrit (textures corrigees) par rebuild_full
+    print()
+    print("[+] Fixing missing textures...")
+    fix_missing_textures()
 
-print()
-print("[+] Saving Blender file...")
+    print()
+    print("[+] Saving Blender file...")
 
-# Le mode REST n'était nécessaire que pour les calculs de bake : le
-# restaurer, sinon l'armature reste évaluée au repos (T-Pose figée).
-for _arm in bpy.data.armatures:
-    if _arm.pose_position != 'POSE':
-        _arm.pose_position = 'POSE'
+    # Le mode REST n'était nécessaire que pour les calculs de bake : le
+    # restaurer, sinon l'armature reste évaluée au repos (T-Pose figée).
+    for _arm in bpy.data.armatures:
+        if _arm.pose_position != 'POSE':
+            _arm.pose_position = 'POSE'
 
-bpy.ops.wm.save_as_mainfile(filepath="morrowind.blend")
+    bpy.ops.wm.save_as_mainfile(filepath="morrowind.blend")
 
 print()
 print("=" * 60)

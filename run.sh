@@ -32,6 +32,75 @@ BSATOOL="./openmw-tools/bsatool"
 ok "Dependencies verified."
 
 # ==========================================
+# 1. Data source: openmw.cfg (preferred) or legacy config.json
+# ==========================================
+# Set MW2G_LEGACY=1 to force the old flow (config.json + manual BSA/mod extraction).
+CONFIG_FILE="$SCRIPT_DIR/config.json"
+OPENMW_CFG=""
+MESHES_ARG="data/meshes"
+TEXTURES_ARG="data/textures"
+
+if [ "${MW2G_LEGACY:-0}" != "1" ]; then
+    # a) path stored in config.json ("openmw_cfg")
+    if [ -f "$CONFIG_FILE" ]; then
+        OPENMW_CFG=$(python3 -c "
+import json
+print(json.load(open('$CONFIG_FILE')).get('openmw_cfg', ''))
+" 2>/dev/null || true)
+        OPENMW_CFG="${OPENMW_CFG/#\~/$HOME}"
+    fi
+
+    # b) autodetection (~/.config/openmw, Flatpak, Windows, macOS)
+    if [ -z "$OPENMW_CFG" ]; then
+        DETECTED=$(python3 scripts/openmw_cfg.py find 2>/dev/null || true)
+        if [ -n "$DETECTED" ]; then
+            read -rp "openmw.cfg detected: $DETECTED. Use it? [Y/n] " USE_CFG
+            case "$USE_CFG" in
+                n|N|no|NO) ;;
+                *)
+                    OPENMW_CFG="$DETECTED"
+                    python3 - "$CONFIG_FILE" "$OPENMW_CFG" <<'PY'
+import json, os, sys
+path, cfg = sys.argv[1:3]
+data = {}
+if os.path.exists(path):
+    try:
+        data = json.load(open(path))
+    except ValueError:
+        pass
+data["openmw_cfg"] = cfg
+json.dump(data, open(path, "w"), indent=2)
+PY
+                    ;;
+            esac
+        fi
+    fi
+
+    if [ -n "$OPENMW_CFG" ] && [ ! -f "$OPENMW_CFG" ]; then
+        fail "openmw.cfg not found: $OPENMW_CFG (check config.json)"
+    fi
+fi
+
+if [ -n "$OPENMW_CFG" ]; then
+    step 1 "Using openmw.cfg"
+    ok "$OPENMW_CFG"
+
+    step 2 "Prepare data (BSA cache, plugins in load order, merge)"
+    python3 scripts/openmw_cfg.py prepare \
+        --cfg "$OPENMW_CFG" \
+        --tes3conv ./tes3conv \
+        --bsatool "$BSATOOL" \
+        --cache "$SCRIPT_DIR/data" \
+        --out output.json \
+        --paths output_paths.json \
+        || fail "Data preparation failed."
+
+    MESHES_ARG=$(python3 -c "import json, os; print(os.pathsep.join(json.load(open('output_paths.json'))['meshes']))")
+    TEXTURES_ARG=$(python3 -c "import json, os; print(os.pathsep.join(json.load(open('output_paths.json'))['textures']))")
+    [ -n "$MESHES_ARG" ] || fail "No meshes directory found (check data= lines in openmw.cfg)."
+    ok "output.json generated."
+else
+# ==========================================
 # 1. Load configuration
 # ==========================================
 CONFIG_FILE="$SCRIPT_DIR/config.json"
@@ -302,20 +371,32 @@ print('[+] Merged output_${ESP_BASENAME}.json into output.json')
     fi
 fi
 
+fi
+
 # ==========================================
 # 6. Import mode + Cell name
 # ==========================================
 step 6 "Import mode"
 echo "What do you want to import?"
-echo "  1) cell - static decor of the cell (default)"
-echo "  2) npc  - NPCs/Creatures with body parts and animations"
+echo "  1) interior - static decor of an interior cell (default)"
+echo "  2) npc      - NPCs/Creatures with body parts and animations"
+echo "  3) exterior - one or several exterior cells (by grid coordinates)"
+echo "  4) full     - exterior grid + every interior reachable through its doors + NPCs (idle only)"
+echo "                one .blend/.glb for the exterior + one per interior, in export/"
 echo ""
-read -rp "Mode [cells]: " IMPORT_MODE
+read -rp "Mode [interior]: " IMPORT_MODE
 case "$IMPORT_MODE" in
-   npc|NPC|2) IMPORT_MODE="npc" ;;
-    *)           IMPORT_MODE="cell" ;;
+    npc|NPC|2)                  IMPORT_MODE="npc" ;;
+    exterior|EXTERIOR|ext|3)    IMPORT_MODE="exterior" ;;
+    full|FULL|Full|4)           IMPORT_MODE="full" ;;
+    *)                          IMPORT_MODE="interior" ;;
 esac
 ok "Mode: $IMPORT_MODE"
+
+if { [ "$IMPORT_MODE" = "exterior" ] || [ "$IMPORT_MODE" = "full" ]; } && [ -z "$OPENMW_CFG" ]; then
+    warn "Legacy flow: plugins are merged without per-reference merge, so exterior cells"
+    warn "modified by a plugin may be incomplete. Use openmw.cfg for reliable results."
+fi
 
 NPC_NAME=""
 if [ "$IMPORT_MODE" = "npc" ]; then
@@ -332,7 +413,7 @@ if [ "$IMPORT_MODE" = "npc" ]; then
 fi
 
 CELL_NAME=""
-if [ "$IMPORT_MODE" = "cell" ]; then
+if [ "$IMPORT_MODE" = "interior" ]; then
     echo "Enter the cell name (exactly as in Morrowind)"
     echo "E.g.: \"Balmora, Temple\" / \"Balmora, Guild of Mages\""
     echo ""
@@ -346,32 +427,104 @@ if [ "$IMPORT_MODE" = "cell" ]; then
     ok "Cell: $CELL_NAME"
 fi
 
+GRID=""
+if [ "$IMPORT_MODE" = "exterior" ] || [ "$IMPORT_MODE" = "full" ]; then
+    echo "Enter the exterior cell grid: 'x,y' for one cell, 'x1,y1:x2,y2' for a rectangle"
+    echo "E.g.: -2,-9 (Seyda Neen) / -3,-10:-1,-8 (3x3 cells around it)"
+    echo ""
+    read -rp "Grid [-2,-9]: " GRID
+    if [ -z "$GRID" ]; then
+        GRID="-2,-9"
+    fi
+    GRID="${GRID#\"}"
+    GRID="${GRID%\"}"
+    ok "Grid: $GRID"
+fi
+
+WITH_NPCS=1
+FULL_ANIMS="idle"   # NPC animations kept in full mode (comma-separated prefixes, or "all")
+if [ "$IMPORT_MODE" = "full" ]; then
+    read -rp "Include NPCs/creatures? (slow) [Y/n] " USE_NPCS
+    case "$USE_NPCS" in n|N|no|NO) WITH_NPCS=0 ;; esac
+fi
+
 # ==========================================
 # 7. Conversion Blender (scripts 1-6)
 # ==========================================
 step 7 "Blender conversion (scripts 1-6)"
 
 echo "[..] Launching Blender (script 1/6: generation)..."
-BLENDER_ARGS=(--json output.json --meshes data/meshes --textures data/textures --mode "$IMPORT_MODE")
+BLENDER_MODE="$IMPORT_MODE"
+[ "$IMPORT_MODE" = "exterior" ] && BLENDER_MODE="interior"
+BLENDER_ARGS=(--json output.json --meshes "$MESHES_ARG" --textures "$TEXTURES_ARG" --mode "$BLENDER_MODE")
 [ -n "$NPC_NAME" ] && BLENDER_ARGS+=(--npc "$NPC_NAME")
 [ -n "$CELL_NAME" ] && BLENDER_ARGS+=(--cell "$CELL_NAME")
+[ -n "$GRID" ] && BLENDER_ARGS+=(--grid "$GRID")
+[ "$IMPORT_MODE" = "full" ] && BLENDER_ARGS+=(--npcs "$WITH_NPCS" --anims "$FULL_ANIMS" --outdir "$SCRIPT_DIR/export")
 
-blender --background --python scripts/1-generate_blend.py -- "${BLENDER_ARGS[@]}"
+# --python-exit-code 1 : si le script plante, on s'arrête (sinon Blender sort en
+# code 0 et la suite du pipeline traite un morrowind.blend périmé).
+blender --background --python-exit-code 1 --python scripts/1-generate_blend.py -- "${BLENDER_ARGS[@]}"
 
-for script in 2-tga_to_png 3-rebuild_mat 3.5-dedup_materials 4-no_lube 5-cleanup 6-set_collision; do
-    echo "[..] Launching Blender (script ${script})..."
-    blender --background --python "scripts/${script}.py"
-done
+# Post-processing of one .blend (scripts 4-6), then GLB export (script 7).
+#   post_process <blend> <glb> [options for 7-export_glb.py]
+# When POST_LOG is set (full mode, many files) Blender's output goes to that log.
+run_blender() {
+    if [ -n "${POST_LOG:-}" ]; then
+        blender --background --python "$@" >> "$POST_LOG" 2>&1
+    else
+        blender --background --python "$@"
+    fi
+}
 
-ok "Blender scripts executed."
+post_process() {
+    local blend="$1" glb="$2"
+    shift 2
+    local script
+    for script in 4-no_lube 5-cleanup 6-set_collision; do
+        [ -z "${POST_LOG:-}" ] && echo "[..] Launching Blender (script ${script})..."
+        run_blender "scripts/${script}.py" -- --blend "$blend"
+    done
+    [ -z "${POST_LOG:-}" ] && echo "[..] Exporting $(basename "$glb")..."
+    run_blender scripts/7-export_glb.py -- --blend "$blend" --output "$glb" "$@"
+}
 
-# ==========================================
-# 8. Export GLB
-# ==========================================
-step 8 "Export GLB"
-echo "[..] Exporting..."
-blender --background --python scripts/7-export_glb.py
-ok "morrowind.glb generated."
+if [ "$IMPORT_MODE" = "full" ]; then
+    EXPORT_DIR="$SCRIPT_DIR/export"
+    [ -f "$EXPORT_DIR/files.txt" ] || fail "export/files.txt not found: script 1 produced no file."
+    mapfile -t STEMS < "$EXPORT_DIR/files.txt"
+
+    step 8 "Post-process + export GLB (one per cell)"
+    POST_LOG="$EXPORT_DIR/post.log"
+    : > "$POST_LOG"
+    TOTAL=0
+    for stem in "${STEMS[@]}"; do [ -n "$stem" ] && TOTAL=$((TOTAL + 1)); done
+    N=0
+    for stem in "${STEMS[@]}"; do
+        [ -n "$stem" ] || continue
+        N=$((N + 1))
+        echo "[..] [$N/$TOTAL] $stem"
+        post_process "$EXPORT_DIR/$stem.blend" "$EXPORT_DIR/$stem.glb" --anims "$FULL_ANIMS"
+        [ -f "$EXPORT_DIR/$stem.glb" ] || warn "$stem.glb not generated (see export/post.log)"
+    done
+    unset POST_LOG
+    ok "$TOTAL file(s) processed (Blender log: export/post.log)."
+else
+    for script in 4-no_lube 5-cleanup 6-set_collision; do
+        echo "[..] Launching Blender (script ${script})..."
+        blender --background --python "scripts/${script}.py"
+    done
+
+    ok "Blender scripts executed."
+
+    # ==========================================
+    # 8. Export GLB
+    # ==========================================
+    step 8 "Export GLB"
+    echo "[..] Exporting..."
+    blender --background --python scripts/7-export_glb.py
+    ok "morrowind.glb generated."
+fi
 
 # ==========================================
 # 9. Cleanup and summary
@@ -385,7 +538,15 @@ echo -e "${GREEN} Conversion complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Generated files:"
-echo "  - morrowind.blend"
-echo "  - morrowind.glb"
-echo ""
-echo "Import morrowind.glb into Godot."
+if [ "$IMPORT_MODE" = "full" ]; then
+    echo "  - export/exterior.blend / exterior.glb"
+    echo "  - export/interiors/*.blend / *.glb  ($(find "$SCRIPT_DIR/export/interiors" -name '*.glb' 2>/dev/null | wc -l) interior(s))"
+    echo "  - export/manifest.json  (doors: where each interior connects)"
+    echo ""
+    echo "Import the .glb files into Godot; manifest.json links exteriors and interiors."
+else
+    echo "  - morrowind.blend"
+    echo "  - morrowind.glb"
+    echo ""
+    echo "Import morrowind.glb into Godot."
+fi

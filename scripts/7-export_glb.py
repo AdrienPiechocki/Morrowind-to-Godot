@@ -50,6 +50,8 @@ print(f"[+] Exporting GLB to: {output_path}")
 def split_marker_actions():
     """Découpe les actions Morrowind (pose markers '<Seq>: Start|Stop')
     en pistes NLA nommées -> chaque piste devient une animation dans le GLB."""
+    _seen_skeletons = set()
+
     for ob in bpy.data.objects:
         if ob.type != 'ARMATURE':
             continue
@@ -59,6 +61,12 @@ def split_marker_actions():
         src = ad.action
         if not src.pose_markers:
             continue
+
+        sig = tuple(sorted(b.name for b in ob.data.bones))
+        if sig in _seen_skeletons:
+            ad.action = None          # doublon: pas d'animations
+            continue
+        _seen_skeletons.add(sig)
 
         # Regrouper les marqueurs par clip : "Idle2: Start" -> Idle2,
         # "SpellCast: Equip Start" -> SpellCast_Equip, etc.
@@ -78,12 +86,14 @@ def split_marker_actions():
                 entry = clips.setdefault(name, [None, m.frame])
                 entry[1] = m.frame if entry[1] is None else min(entry[1], m.frame)
 
-        # Piste bonus : l'action complète telle quelle
-        src_slot = next(iter(src.slots))
-        full_track = ad.nla_tracks.new()
-        full_track.name = f"{src.name}_FULL"
-        full_strip = full_track.strips.new(name=full_track.name, start=0, action=src)
-        full_strip.action_slot = src_slot
+        # Piste bonus : l'action complète telle quelle. Seulement sans filtre --anims :
+        # avec un filtre (ex. idle), elle réintroduirait les animations écartées.
+        if KEEP_PREFIXES is None:
+            src_slot = next(iter(src.slots))
+            full_track = ad.nla_tracks.new()
+            full_track.name = f"{src.name}_FULL"
+            full_strip = full_track.strips.new(name=full_track.name, start=0, action=src)
+            full_strip.action_slot = src_slot
 
         ad.action = None
 
@@ -157,6 +167,9 @@ bpy.ops.export_scene.gltf(
     export_apply=True,
     export_animations=True,
     export_animation_mode='NLA_TRACKS',
+    export_optimize_animation_size=True,
+    export_optimize_animation_keep_anim_armature=False,
+    export_force_sampling=False,
 )
 
 print(f"[+] GLB exported successfully: {output_path}")

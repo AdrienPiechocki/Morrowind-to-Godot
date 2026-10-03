@@ -21,7 +21,7 @@ def hide_recursive(obj):
         hide_recursive(child)
 
 for obj in bpy.data.objects:
-    if "collision" in obj.name.lower() or "shadowbox" in obj.name.lower() or "marker_north" in obj.name.lower():
+    if "collision" in obj.name.lower() or "shadowbox" in obj.name.lower() or "marker_north" in obj.name.lower() or "editormarker" in obj.name.lower() or "marker_prison" in obj.name.lower():
         hide_recursive(obj)
 
 # Remove Blender default objects
@@ -70,5 +70,5 @@ if removed:
     print(f"[+] {removed} blackbox object(s) removed.")
 
 
-bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+bpy.ops.wm.save_as_mainfile(filepath=blend_path, compress=True)
 print(f"[+] Saved: {blend_path}")

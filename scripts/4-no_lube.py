@@ -26,5 +26,5 @@ for mat in bpy.data.materials:
                 elif 'Specular IOR Level' in node.inputs:
                     node.inputs['Specular IOR Level'].default_value = 0.0
 
-bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+bpy.ops.wm.save_as_mainfile(filepath=blend_path, compress=True)
 print(f"[+] Saved: {blend_path}")
