@@ -1,166 +1,136 @@
-# Morrowind to Godot
+# Morrowind-to-Godot
 
-Convert Morrowind game assets (meshes, textures, cells) into Godot Engine-ready 3D scenes via Blender.
+Converts cells from **The Elder Scrolls III: Morrowind** (interiors, exteriors, animated NPCs/creatures) into **`.blend`** and **`.glb`** files, ready to import into **Godot**.
 
-## How It Works
+The pipeline reads your game data (through `openmw.cfg` or a *Data Files* folder), merges plugins in load order, rebuilds the scenes in Blender (headless, `--background`), cleans them up, adds Godot collision suffixes and exports to GLB.
 
-The pipeline extracts Morrowind data files, reconstructs selected cells in Blender using the [io_scene_mw](https://github.com/Greatness7/io_scene_mw) addon, and exports a `.glb` file importable by Godot.
+## Features
+
+- **4 import modes**: `interior`, `npc`, `exterior`, `full`
+- Reads **`openmw.cfg`** directly: `data=`, `data-local=`, `content=`, BSA archives, mod load order
+- **Plugin merging** cell by cell and reference by reference (an `.esp` no longer overwrites the whole cell)
+- **`full` mode**: exterior grid + every interior reachable through its doors + NPCs (`idle` animation), one `.glb` per cell and a `manifest.json` linking the doors
+- Morrowind animations (`Seq: Start/Stop` markers) split into **NLA tracks**, so each clip becomes its own animation in the GLB
+- Godot collisions (`-col`), matte materials, emission removed
+- **`-v` / `--verbose`** option and a **progress bar** on every Python script
+
+## Requirements
+
+| Tool | Purpose |
+|---|---|
+| Linux / macOS / Windows (bash) | `run.sh` is a bash script |
+| **Blender 4.4+** in your `PATH` | scene generation and export (script 7 uses the slotted actions API) |
+| **Python 3** | `openmw_cfg.py`, `mwlog.py` |
+| [`tes3conv`](https://github.com/Greatness7/tes3conv) | converts `.esm`/`.esp` to JSON |
+| `bsatool` (OpenMW tools) | extracts `.bsa` archives |
+| `io_scene_mw` | imports Morrowind `.nif` files into Blender |
+| `unzip`, `7z`, `unrar` | only for mod extraction in legacy mode |
+| A legitimate copy of Morrowind | game data is not included |
+
+`run.sh` expects `./tes3conv`, `./openmw-tools/bsatool` and `./io_scene_mw/` at the project root (see `install.sh`).
+
+## Project layout
 
 ```
-Morrowind Data Files (.bsa, .esm, .esp)
-    │
-    ├── bsatool ──────► Extracted meshes, textures, sounds
-    ├── tes3conv ─────► JSON (cell/object/NPC data)
-    │
-    ▼
-Blender (headless, via io_scene_mw)
-    │
-    ├── Import NIF meshes
-    ├── Reconstruct cell (position, rotation, scale)
-    │   ── or ──
-    │   Assemble an animated NPC/Creature:
-    │   ├── Default race skeleton (+ KF animations)
-    │   ├── Race body parts skinned to the armature
-    │   ├── Clothes & armor attached to bones (mirrored L/R)
-    │   └── Covered skin parts removed
-    ├── Convert TGA → PNG
-    ├── Rebuild materials (Principled BSDF)
-    ├── Remove specularity
-    ├── Hide collision meshes
-    ├── Rename meshes with -col suffix
-    │
-    ▼
-morrowind.blend + morrowind.glb ──► Godot Engine
+.
+├── run.sh                  # entry point (orchestrates everything)
+├── install.sh              # installs tes3conv, bsatool, io_scene_mw
+├── config.json             # created automatically (path to openmw.cfg)
+├── data/                   # cache: extracted BSAs, plugins, meshes, textures
+├── mods/                   # (legacy) mod archives to extract
+├── export/                 # full mode output
+└── scripts/
+    ├── mwlog.py            # shared vprint / eprint / progress bar
+    ├── openmw_cfg.py       # reads openmw.cfg, extracts BSAs, merges plugins
+    ├── 1-generate_blend.py # builds the Blender scene
+    ├── 4-no_lube.py        # materials: roughness 1, specular 0
+    ├── 5-cleanup.py        # hides shadows/markers, removes decals and door icons
+    ├── 6-set_collision.py  # adds the -col suffix to collision meshes
+    ├── 6b-zero_emission.py # final pass: emission set to 0
+    └── 7-export_glb.py     # splits animations into NLA tracks and exports the GLB
 ```
-
-## Prerequisites
-
-- **Blender** 3.6+ (with `bpy` module available in CLI)
-- **Python** 3.x
-- **curl**, **unzip**, **tar** (for installation)
-- **The Elder Scrolls III: Morrowind** installed (for data files)
-
-## Installation
-
-```bash
-./install.sh
-```
-
-This script will:
-1. Download **tes3conv** v0.4.1 (ESM/ESP to JSON converter)
-2. Download **OpenMW bsatool** 0.51.0 (BSA archive extractor)
-3. Clone the **io_scene_mw** Blender addon
-4. Symlink the addon into your Blender addons directory
-
-## Configuration
-
-Edit `config.json` to point to your Morrowind `Data Files` directory:
-
-```json
-{
-  "morrowind_data": "/path/to/Morrowind/Data Files/"
-}
-```
-
-On first run, if `config.json` is missing, you will be prompted to enter the path interactively.
 
 ## Usage
 
 ```bash
-./run.sh
+./run.sh                    # progress bar only
+./run.sh -v                 # all messages (Python scripts and Blender)
+./run.sh --npcs 1           # include NPCs/creatures without prompting
+./run.sh --anims idle       # animations to keep (comma-separated prefixes, or "all")
 ```
 
-The script guides you through the conversion interactively:
+| Option | Effect |
+|---|---|
+| `-v`, `--verbose` | shows every progress message. Without it, only the progress bar and errors are visible |
+| `--npcs 0\|1` | include or skip NPCs/creatures in `interior` / `exterior` / `full` scenes |
+| `--anims <prefixes\|all>` | animations kept at export (default: `idle` whenever NPCs are present) |
+| `MW2G_LEGACY=1` (env var) | forces the old flow: `config.json` + manual BSA/mod extraction |
 
-1. **Extract BSA archives** — Select which `.bsa` files to unpack
-2. **Extract mod assets** — Automatically processes `.zip`/`.7z`/`.rar` mods from `mods/`
-3. **Convert plugins** — Converts `Morrowind.esm` to JSON, optionally merges extra `.esm`/`.esp`
-4. **Choose a mode**:
-   - `cell` — Rebuild a Morrowind cell by name (e.g. `Balmora, Temple`)
-   - `npc` — Assemble a single animated NPC or creature
-5. **Blender processing** — Automatically runs 7 processing scripts
-6. **Export** — Outputs `morrowind.blend` and `morrowind.glb`
+### Workflow
 
-### NPC Mode
+1. **Data source**: `openmw.cfg` is auto-detected (`~/.config/openmw`, Flatpak, Windows, macOS) and remembered in `config.json`.
+2. **Preparation** (`openmw_cfg.py prepare`): extracts BSAs into `data/`, converts plugins with `tes3conv`, merges them in load order and writes `output.json`.
+3. **Mode selection** (interactive prompts, see below).
+4. **Blender**: `1-generate_blend.py`, then `4`, `5`, `6`, `6b`.
+5. **Export**: `7-export_glb.py` produces the `.glb`.
+6. **Cleanup**: temporary `output*` files are deleted.
 
-Enter an NPC name (or part of it) and, if several occurrences exist across cells,
-pick the one to import from the numbered list (empty entry = first).
+### Import modes
 
-The NPC is rebuilt the same way the engine does it:
+| Mode | Prompt | Result |
+|---|---|---|
+| `interior` (default) | exact cell name, e.g. `Balmora, Temple` | static decor of an interior |
+| `npc` | name or id (partial match ok), empty = every NPC in the cell | NPCs/creatures with body parts and animations |
+| `exterior` | grid `x,y` or rectangle `x1,y1:x2,y2`, e.g. `-2,-9` (Seyda Neen) or `-3,-10:-1,-8` | one or several exterior cells |
+| `full` | exterior grid | exterior + every interior linked by its doors + NPCs |
 
-- **Skeleton** — the race's default skeleton (`base_anim.nif`, female variant, or
-  `base_animkna.nif` for beast races detected via the Race record's Beast flag)
-  with its idle animations; the NPC's own `x*.kf` files are used when present.
-- **Body** — race skin parts are resolved exactly like OpenMW: each BodyPart
-  record carries a `race` field matched against the NPC's race, plus a FEMALE
-  flag for gender (male parts fall back for missing female parts). This works
-  with any naming scheme, including custom mod races.
-- **Head & hair** — taken from the NPC's explicit head/hair bodypart ids.
-- **Clothes & armor** — attached to their biped bone slots (groin, knees, upper
-  legs, ankles, chest, wrists, forearms, upper arms, pauldrons on clavicles),
-  duplicated as mirrored copies for left/right pieces. Skin parts covered by a
-  garment are removed; a helmet hides the hair but not the head. Weapons and
-  shields are skipped.
+If several NPCs match a search, a menu asks which one to import (empty input = the first).
 
-If no skin exists for the NPC's race (e.g. a mod race without bodyparts), the
-generic mannequin placeholders of the skeleton are kept so the character stays
-visible, with a warning in the log.
+## Output
 
-### Adding Mods
-
-Place mod archives (`.zip`, `.7z`, `.rar`) in the `mods/` directory. The pipeline will automatically extract meshes, textures, and plugin files into `data/`.
-
-To use mod content (custom races, NPCs, items), select the mod's plugin at the
-plugins prompt during conversion: its records are merged into `output.json`
-(later records override vanilla ones). Custom races are fully supported as long
-as they ship standard BodyPart records — validated with Tamriel Data +
-Tamriel Rebuilt (e.g. the Dagi-raht NPC Dro'Ba).
-
-## Blender Processing Pipeline
-
-The following scripts run sequentially in Blender background mode:
-
-| Script | Purpose |
-|--------|---------|
-| `1-generate_blend.py` | Parse JSON, import NIF meshes, reconstruct cells or assemble NPCs |
-| `2-tga_to_png.py` | Convert TGA textures to PNG for glTF compatibility |
-| `3-rebuild_mat.py` | Replace NIF shader nodes with Principled BSDF |
-| `3.5-dedup_materials.py` | Merge duplicate materials |
-| `4-no_lube.py` | Set roughness=1.0, specular=0.0 (flat Morrowind look) |
-| `5-cleanup.py` | Hide collision/shadow objects, remove junk |
-| `6-set_collision.py` | Append `-col` suffix for Godot trimesh collision |
-| `7-export_glb.py` | Export scene to GLB format |
-
-## Project Structure
+**`interior`, `npc`, `exterior` modes**
 
 ```
-.
-├── install.sh              # Downloads tools and sets up addon
-├── run.sh                  # Main conversion pipeline
-├── config.json             # Morrowind data path config
-├── tes3conv                # ESM/ESP to JSON converter
-├── openmw-tools/           # bsatool + shared libraries
-├── data/                   # Extracted game assets
-│   ├── meshes/
-│   ├── textures/
-│   └── *.esm, *.ESP
-├── mods/                   # Mod archives (.zip, .7z, .rar)
-├── scripts/                # Blender Python processing scripts
-├── io_scene_mw/            # Blender NIF import/export addon
-├── morrowind.blend         # Intermediate Blender scene (inspectable)
-└── morrowind.glb           # Final output (Godot-ready)
+morrowind.blend
+morrowind.glb
 ```
 
-## Godot Integration
+**`full` mode**
 
-The exported `morrowind.glb` can be directly imported into Godot 4.x. Mesh names are suffixed with `-col` so Godot automatically generates trimesh collision shapes on import. NPCs export as skinned meshes with their idle animations playable out of the box.
+```
+export/
+├── exterior.blend / exterior.glb
+├── interiors/*.blend / *.glb
+├── manifest.json        # doors: where each interior connects
+├── files.txt            # list of produced files
+└── post.log             # Blender log of the post-processing
+```
 
-## Credits
+Import the `.glb` files into Godot. `manifest.json` lets you link exteriors and interiors.
 
-- [io_scene_mw](https://github.com/Greatness7/io_scene_mw) by Greatness7 — Blender addon for Morrowind NIF files
-- [tes3conv](https://github.com/Greatness7/tes3conv) by Greatness7 — Morrowind ESM/ESP to JSON converter
-- [OpenMW bsatool](https://openmw.org/) — BSA archive extraction tool
+## Godot integration
+
+- Collision meshes get the **`-col`** suffix (Trimesh, precise). For convex shapes (lighter), set `SUFFIXE = "-convcol"` in `scripts/6-set_collision.py`.
+- Shadow objects, editor markers, door icons and decals are hidden or removed before export.
+- Materials are made matte (roughness 1, specular 0, emission 0) to match Godot's lighting.
+- Animations show up as separate clips in the `AnimationPlayer` (one NLA track per sequence, e.g. `Idle2`, `SpellCast_Equip`).
+
+## Verbose and progress
+
+- `vprint` (from `mwlog`) replaces `print` and only prints with `-v`.
+- `eprint` always prints (errors, the NPC choice menu).
+- Progress bars go through **stderr**, so they stay visible even when `run.sh` silences Blender's stdout outside verbose mode. In a log file (`full` mode, `export/post.log`), they shrink to one line every 10%.
+
+```
+[██████████░░░░░░░░░░░░░░░░░░] Interieurs 3/12 > Décor 45/300  15% 0:12 ETA 0:40
+```
+
+## Known limitations
+
+- The **legacy** flow (without `openmw.cfg`) merges plugins without per-reference merging, so exterior cells modified by a plugin may be incomplete.
+- NPC import is slow, especially in `full` mode.
+- The cleanup step deletes every `output*` file in the project root: don't store anything important under that name.
 
 ## License
 
-The `io_scene_mw` addon is licensed under GPL-3.0. Other project scripts have no explicit license.
+This project contains no Morrowind data. Assets remain the property of Bethesda Softworks; you need to own the game to use this pipeline.
