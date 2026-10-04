@@ -203,6 +203,28 @@ NPC_RACE_SKINS_MISSING = False
 CURRENT_REC_TYPE = None
 
 
+def build_script_disabled_ids(data):
+    disabled_ids = set()
+    # Les scripts MW écrivent le plus souvent "id_quoté"->Disable (ou id nu->Disable)
+    pat = re.compile(r'(?:"([^"]+)"|([\w]+))\s*->\s*(?:Disable|SetDelete)\b', re.IGNORECASE)
+    for record in data:
+        if record.get("type") == "Script":
+            script_text = record.get("text", "")
+            for quoted, bare in pat.findall(script_text):
+                disabled_ids.add((quoted or bare).strip().lower())
+    return disabled_ids
+
+
+def is_ref_skipped(ref):
+    """True si la référence est supprimée, désactivée, ou désactivée par un script."""
+    if ref.get("deleted", False) or ref.get("disabled") is True:
+        return True
+    return (ref.get("id") or "").lower() in SCRIPT_DISABLED_IDS
+
+# Lors du chargement de output.json
+data = json.load(open('output.json'))
+SCRIPT_DISABLED_IDS = build_script_disabled_ids(data)
+
 # ==========================================
 # JSON & FILE SYSTEM
 # ==========================================
@@ -1749,7 +1771,7 @@ def find_npc_references(record_map, seen_cells):
     for cell in seen_cells.values():
         cell_label = cell.get("name") or f"Cell_{cell.get('data', {}).get('grid')}"
         for ref in cell.get("references", []):
-            if ref.get("deleted", False):
+            if is_ref_skipped(ref):
                 continue
             rec_info = record_map.get((ref.get("id") or "").lower())
             if not rec_info or not should_import(rec_info.get("type")):
@@ -2278,7 +2300,7 @@ def rebuild_cells_in_blender():
             origin_offset = grid_origin
         else:
             for ref in references:
-                if ref.get("deleted", False):
+                if is_ref_skipped(ref):
                     continue
                 ref_id = ref.get("id", "Unknown_Ref")
                 rec_info = record_map.get(ref_id.lower(), {})
@@ -2298,7 +2320,7 @@ def rebuild_cells_in_blender():
         if IMPORT_MODE == "npc":
             # Mode npc : seuls les NPCs/creatures (should_import filtre deja)
             for ref in references:
-                if ref.get("deleted", False):
+                if is_ref_skipped(ref):
                     continue
 
                 rec_info = record_map.get((ref.get("id") or "").lower(), {})
@@ -2391,7 +2413,7 @@ class _IsolatedView:
 
 def import_cell_refs(cell, record_map, origin_offset, collection, with_npcs=True):
     """Decor statique puis NPCs/creatures d'une cell. Retourne le nombre d'objets."""
-    refs = [r for r in (cell.get("references") or []) if not r.get("deleted", False)]
+    refs = [r for r in (cell.get("references") or []) if not is_ref_skipped(r)]
     count = 0
 
     _set_import_mode("cell")
