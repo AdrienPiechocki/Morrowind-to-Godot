@@ -4,6 +4,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Options : --anims <prefixes|all>  (ex. --anims idle) ; --npcs 0|1  (NPCs dans les scenes interior/exterior/full)
+USER_ANIMS=""
+USER_NPCS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --anims)   [ $# -ge 2 ] || { echo "[ERROR] --anims attend une valeur"; exit 1; }
+                   USER_ANIMS="$2"; shift 2 ;;
+        --anims=*) USER_ANIMS="${1#--anims=}"; shift ;;
+        --npcs)    [ $# -ge 2 ] || { echo "[ERROR] --npcs attend 0 ou 1"; exit 1; }
+                   USER_NPCS="$2"; shift 2 ;;
+        --npcs=*)  USER_NPCS="${1#--npcs=}"; shift ;;
+        *)         echo "[ERROR] Option inconnue : $1"; exit 1 ;;
+    esac
+done
+
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -441,11 +456,31 @@ if [ "$IMPORT_MODE" = "exterior" ] || [ "$IMPORT_MODE" = "full" ]; then
     ok "Grid: $GRID"
 fi
 
-WITH_NPCS=1
-FULL_ANIMS="idle"   # NPC animations kept in full mode (comma-separated prefixes, or "all")
-if [ "$IMPORT_MODE" = "full" ]; then
-    read -rp "Include NPCs/creatures? (slow) [Y/n] " USE_NPCS
-    case "$USE_NPCS" in n|N|no|NO) WITH_NPCS=0 ;; esac
+# NPCs/creatures places dans la scene (modes interior, exterior, full).
+# Defaut : oui en full, non en interior/exterior. --npcs 0|1 evite la question.
+WITH_NPCS=0
+case "$IMPORT_MODE" in
+    full|interior|exterior)
+        if [ -n "$USER_NPCS" ]; then
+            WITH_NPCS="$USER_NPCS"
+        elif [ "$IMPORT_MODE" = "full" ]; then
+            WITH_NPCS=1
+            read -rp "Include NPCs/creatures? (slow) [Y/n] " USE_NPCS
+            case "$USE_NPCS" in n|N|no|NO) WITH_NPCS=0 ;; esac
+        else
+            read -rp "Include NPCs/creatures? (slow) [y/N] " USE_NPCS
+            case "$USE_NPCS" in y|Y|yes|YES) WITH_NPCS=1 ;; esac
+        fi
+        ;;
+esac
+[ "$WITH_NPCS" = "1" ] || WITH_NPCS=0
+
+# Animations des NPCs conservees (prefixes separes par des virgules, ou "all") :
+# idle par defaut des qu'il y a des NPCs dans la scene.
+FULL_ANIMS="${USER_ANIMS:-idle}"
+SCENE_ANIMS=""     # --anims transmis aux scripts 1 et 7 hors mode full
+if [ "$IMPORT_MODE" != "full" ] && { [ "$WITH_NPCS" = "1" ] || [ -n "$USER_ANIMS" ]; }; then
+    SCENE_ANIMS="$FULL_ANIMS"
 fi
 
 # ==========================================
@@ -461,6 +496,10 @@ BLENDER_ARGS=(--json output.json --meshes "$MESHES_ARG" --textures "$TEXTURES_AR
 [ -n "$CELL_NAME" ] && BLENDER_ARGS+=(--cell "$CELL_NAME")
 [ -n "$GRID" ] && BLENDER_ARGS+=(--grid "$GRID")
 [ "$IMPORT_MODE" = "full" ] && BLENDER_ARGS+=(--npcs "$WITH_NPCS" --anims "$FULL_ANIMS" --outdir "$SCRIPT_DIR/export")
+if [ "$IMPORT_MODE" = "interior" ] || [ "$IMPORT_MODE" = "exterior" ]; then
+    BLENDER_ARGS+=(--npcs "$WITH_NPCS")
+fi
+[ -n "$SCENE_ANIMS" ] && BLENDER_ARGS+=(--anims "$SCENE_ANIMS")
 
 # --python-exit-code 1 : si le script plante, on s'arrête (sinon Blender sort en
 # code 0 et la suite du pipeline traite un morrowind.blend périmé).
@@ -481,7 +520,7 @@ post_process() {
     local blend="$1" glb="$2"
     shift 2
     local script
-    for script in 4-no_lube 5-cleanup 6-set_collision; do
+    for script in 4-no_lube 5-cleanup 6-set_collision 6b-zero_emission; do
         [ -z "${POST_LOG:-}" ] && echo "[..] Launching Blender (script ${script})..."
         run_blender "scripts/${script}.py" -- --blend "$blend"
     done
@@ -510,7 +549,7 @@ if [ "$IMPORT_MODE" = "full" ]; then
     unset POST_LOG
     ok "$TOTAL file(s) processed (Blender log: export/post.log)."
 else
-    for script in 4-no_lube 5-cleanup 6-set_collision; do
+    for script in 4-no_lube 5-cleanup 6-set_collision 6b-zero_emission; do
         echo "[..] Launching Blender (script ${script})..."
         blender --background --python "scripts/${script}.py"
     done
@@ -522,7 +561,9 @@ else
     # ==========================================
     step 8 "Export GLB"
     echo "[..] Exporting..."
-    blender --background --python scripts/7-export_glb.py
+    EXPORT_ARGS=()
+    [ -n "$SCENE_ANIMS" ] && EXPORT_ARGS=(--anims "$SCENE_ANIMS")
+    blender --background --python scripts/7-export_glb.py ${EXPORT_ARGS[@]+-- "${EXPORT_ARGS[@]}"}
     ok "morrowind.glb generated."
 fi
 

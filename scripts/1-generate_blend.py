@@ -104,11 +104,16 @@ if FULL_MODE and TARGET_GRID is None:
     print("[ERROR] --mode full necessite --grid")
     sys.exit(1)
 
+# NPCs/creatures places dans les scenes interior/exterior/full : --npcs 1|0
+# (defaut : 1 en mode full, 0 sinon). Sans effet en mode npc (qui importe deja des NPCs).
+WITH_NPCS = get_arg("npcs", "1" if FULL_MODE else "0") != "0"
+
 # Animations a conserver pour les NPCs/creatures : liste de prefixes (insensible a la
-# casse, separes par des virgules) ou "all". Par defaut : idle uniquement en mode full.
+# casse, separes par des virgules) ou "all". Par defaut : idle quand des NPCs sont
+# places dans une scene (full, ou --npcs 1), sinon all (mode npc).
 # Les autres cles d'animation sont supprimees des actions des l'import (fichiers plus
 # legers) ; 7-export_glb.py recoit le meme --anims pour filtrer l'export.
-_anims_arg = get_arg("anims", "idle" if FULL_MODE else "all")
+_anims_arg = get_arg("anims", "idle" if (FULL_MODE or WITH_NPCS) else "all")
 ANIM_KEEP_PREFIXES = (None if _anims_arg.strip().lower() == "all"
                       else [a.strip().lower() for a in _anims_arg.split(",") if a.strip()])
 
@@ -120,6 +125,36 @@ EXCLUDED_TYPES = {
     "Npc",
     "Creature",
     "BodyPart",
+}
+
+# Objets tenus en main (arme du NPC) : --held 0 pour désactiver
+HELD_ITEMS = get_arg("held", "1") != "0"
+# Groupes d'animation de combat (noms de clips des NIFs d'animation de Morrowind).
+COMBAT_ANIM_GROUPS = (
+    "weapononehand", "weapontwohand", "weapontwowide",
+    "handtohand", "bowandarrow", "crossbow", "throwweapon",
+)
+
+
+def _combat_anims_kept():
+    """True si au moins un clip de combat survit au filtre --anims
+    (ANIM_KEEP_PREFIXES = None signifie « toutes les animations »)."""
+    if ANIM_KEEP_PREFIXES is None:
+        return True
+    return any(g.startswith(p) for p in ANIM_KEEP_PREFIXES for g in COMBAT_ANIM_GROUPS)
+
+
+# L'arme tenue n'est affichée que si des animations de combat sont présentes :
+# avec --anims idle (défaut en mode full), le NPC reste les mains vides.
+HELD_WEAPON = HELD_ITEMS and _combat_anims_kept()
+# Rotation (degrés, autour de la verticale) des accessoires 'am_*' tenus en main :
+# -90 = de « pointe vers la gauche du NPC » à « pointe vers l'avant ». Réglable : MW_HELD_YAW=90 ./run.sh (ou --held-yaw 90)
+HELD_AM_YAW = float(get_arg("held-yaw", os.environ.get("MW_HELD_YAW", "-90")))
+
+# Squelettes Animated Morrowind à recaler : stem du mesh du NPC -> (montée en Z en mètres,
+# rotation Z en degrés). Vu pour am_fishman ; inverser le signe de la rotation si besoin.
+AM_SKELETON_FIXES = {
+    "am_fishman": (0.75, 90.0),
 }
 
 # Record types à importer (mode npcs)
@@ -139,6 +174,8 @@ def get_ref_mesh_paths(rec_info):
 # Maps pour l'assemblage des NPCs (bodyparts + vêtements/armures)
 bodypart_map = {}
 item_map = {}
+weapon_map = {}
+record_type_map = {}   # id -> type (diagnostic des objets tenus)
 race_map = {}
 
 # Cache of imported meshes
@@ -160,6 +197,10 @@ GLOBAL_TEMPLATE_COPY_MAP = {}
 # (préfixe b_n_<race>_<genre> absent des bodyparts) : on garde alors les
 # placeholders 'Tri *' du squelette plutôt qu'un NPC sans torse.
 NPC_RACE_SKINS_MISSING = False
+
+# Type du record en cours d'import ('Npc', 'Creature', 'Static'...) : renseigné par
+# place_reference, lu par get_or_import_mesh (le cache d'import ne connaît pas le record).
+CURRENT_REC_TYPE = None
 
 
 # ==========================================
@@ -221,10 +262,14 @@ def build_npc_lookup_maps(data):
     for record in data:
         rtype = record.get("type")
         rid = (record.get("id") or "").lower()
+        if rid and rtype in REFERENCEABLE_TYPES:
+            record_type_map[rid] = rtype
         if rtype == "Bodypart":
             bodypart_map[rid] = record
         elif rtype in ("Clothing", "Armor"):
             item_map[rid] = record
+        elif rtype == "Weapon":
+            weapon_map[rid] = record
         elif rtype == "Race":
             race_map[rid] = record
 
@@ -278,6 +323,29 @@ def get_default_skeleton(race, is_female):
     if _race_is_beast(race):
         return "base_animkna.nif"
     return "base_anim_female.nif" if is_female else "base_anim.nif"
+
+
+def _pick_held_weapon(rec):
+    """Arme tenue d'un NPC : la plus puissante de son inventaire (comme l'autoEquip
+    d'OpenMW). Munitions et armes de jet ignorées. Retourne (id, record, slot) ou None."""
+    best = None
+    for _count, item_id in rec.get("inventory", []):
+        w = weapon_map.get(str(item_id).lower())
+        if not w or not w.get("mesh"):
+            continue
+        d = w.get("data") or {}
+        wtype = str(d.get("weapon_type") or w.get("weapon_type") or "").lower()
+        if any(k in wtype for k in ("arrow", "bolt", "thrown")):
+            continue
+        score = max(float(d.get(k) or 0) for k in
+                    ("chop_max", "slash_max", "thrust_max"))
+        if best is None or score > best[0]:
+            best = (score, str(item_id), w, wtype)
+    if best is None:
+        return None
+    _score, wid, w, wtype = best
+    slot = "WeaponLeft" if ("bow" in wtype) else "Weapon"   # arcs : main gauche
+    return wid, w, slot
 
 
 def _is_robe(item):
@@ -335,8 +403,9 @@ def build_npc_mesh_paths(rec):
             rank = 1
         for biped in item.get("biped_objects", []):
             slot_type = (biped.get("biped_object_type") or "")
-            if re.sub(r"[\s_]+", "", slot_type).lower() in ("shield", "weapon"):
-                continue  # boucliers/armes tenues : pas de pièce de corps
+            _slot = re.sub(r"[\s_]+", "", slot_type).lower()
+            if (_slot == "shield" and not HELD_ITEMS) or (_slot == "weapon" and not HELD_WEAPON):
+                continue  # boucliers/armes tenues (--held 0 ; arme aussi masquée en --anims idle)
             bp_id = biped.get("male_bodypart")
             if is_female and biped.get("female_bodypart"):
                 bp_id = biped.get("female_bodypart")
@@ -348,12 +417,39 @@ def build_npc_mesh_paths(rec):
     top = {}
     for zone, rank, _e, _i in layers:
         top[zone] = max(top.get(zone, 0), rank)
+    held_done = set()
     for zone, rank, entry, item_id in layers:
+        if zone in ("shield", "weapon"):
+            if zone in held_done:
+                continue          # un seul objet par main
+            held_done.add(zone)
+            print(f"[+] Objet tenu: {item_id} -> {entry[1]}")
         if rank < top[zone]:
             print(f"[-] '{item_id}' [{entry[1]}] masqué (zone '{zone}' couverte "
                   f"par {'une robe' if top[zone] == 3 else 'une armure'})")
             continue
         entries.append(entry)
+
+    # Objet tenu en main (attaché au nœud 'Weapon Bone' comme le moteur)
+    if HELD_WEAPON and rec.get("type") == "Npc":
+        held = _pick_held_weapon(rec)
+        if held:
+            wid, w, slot = held
+            entries.append((w["mesh"], slot))
+            print(f"[+] Objet tenu: {wid} -> {slot}")
+        else:
+            print("[HELD] aucune arme retenue")
+        if rec.get("inventory"):
+            print("[HELD] inventaire de '%s' :" % (rec.get("name") or rec.get("id")))
+            for _c, _i in rec.get("inventory", []):
+                _r = weapon_map.get(str(_i).lower()) or {}
+                _d = _r.get("data") or {}
+                print("[HELD]   %s x%s : %s%s" % (
+                    _i, _c, record_type_map.get(str(_i).lower(), "INCONNU"),
+                    (" type=%s mesh=%s dmg=%s/%s/%s" % (
+                        _d.get("weapon_type"), _r.get("mesh"),
+                        _d.get("chop_max"), _d.get("slash_max"), _d.get("thrust_max"))
+                     if _r else "")))
 
     # Peaux de la race (corps nu, mains, pieds...) : remplace les placeholders
     # génériques 'Tri *' du squelette base_anim.
@@ -615,7 +711,7 @@ def prune_imported_animations(objs):
             print(f"[+] Animations {ANIM_KEEP_PREFIXES}: {res[0]} keyframes gardees, {res[1]} supprimees ({obj.name})")
 
 
-def get_or_import_mesh(mesh_relative_path, _tried=()):
+def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
     clean_key = mesh_relative_path.replace("\\", "/").lower()
 
     if clean_key in imported_mesh_cache:
@@ -652,8 +748,11 @@ def get_or_import_mesh(mesh_relative_path, _tried=()):
             # sans UVs ('Tri ...') que le jeu remplace par les peaux de la race.
             # Si aucune peau de race n'a été trouvée pour ce NPC, on les garde
             # (NPC visible en mannequin plutôt qu'invisible).
+            # Réservé aux NPCs : le modèle d'une CRÉATURE (mudcrab...) porte lui-même
+            # des pièces nommées 'Tri *' qui sont son vrai corps.
             base_name = os.path.basename(resolved_nif_path).lower()
-            if IMPORT_MODE == "npc" and base_name.startswith("base_anim") \
+            is_npc_rec = (CURRENT_REC_TYPE == "Npc")
+            if IMPORT_MODE == "npc" and is_npc_rec and (base_name.startswith("base_anim") or is_model) \
                     and not NPC_RACE_SKINS_MISSING:
                 placeholders = [o for o in imported_objs
                                 if o.type == "MESH" and o.name.lower().startswith("tri ")]
@@ -662,6 +761,18 @@ def get_or_import_mesh(mesh_relative_path, _tried=()):
                 imported_objs = [o for o in imported_objs if o not in placeholders]
                 if placeholders:
                     print(f"[-] {len(placeholders)} placeholder(s) 'Tri *' supprimés de {base_name}")
+
+            # Beast races : 'Tri Tail 2' est un corps blanc générique qui double le vrai
+            # corps, quel que soit le fichier d'où il vient (squelette, Skins.NIF...).
+            if IMPORT_MODE == "npc" and is_npc_rec and not NPC_RACE_SKINS_MISSING:
+                ghosts = [o for o in imported_objs
+                          if o.type == "MESH"
+                          and re.fullmatch(r"tri tail 2(\.\d+)?", o.name.lower())]
+                for obj in ghosts:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                imported_objs = [o for o in imported_objs if o not in ghosts]
+                if ghosts:
+                    print(f"[-] {len(ghosts)} mesh 'Tri Tail 2' supprimé(s) de {base_name}")
 
             if imported_objs:
                 for obj in imported_objs:
@@ -712,7 +823,7 @@ def get_or_import_mesh(mesh_relative_path, _tried=()):
         alt = find_nif_file(mesh_relative_path, tried)
         if alt:
             print(f"[~] Repli sur '{alt}'")
-            return get_or_import_mesh(mesh_relative_path, tried)
+            return get_or_import_mesh(mesh_relative_path, tried, is_model)
         failed_meshes[clean_key] = f"{reason} ({resolved_nif_path})"
     else:
         print(f"[-] Mesh file not found on disk: {mesh_relative_path}")
@@ -747,6 +858,14 @@ ATTACH_NODES_SINGLE = {
     "chest": "Chest",
     "skirt": "Groin",
     "tail": "Tail",
+}
+# Nœuds des objets tenus : volontairement HORS de ATTACH_NODE_NAMES, pour ne
+# jamais écraser leur position par celle du squelette vanilla (les squelettes
+# Animated Morrowind les placent exprès pour tenir canne à pêche, balai...).
+ATTACH_NODES_HELD = {
+    "weapon": "Weapon Bone",
+    "weaponleft": "Weapon Bone Left",
+    "shield": "Shield Bone",
 }
 ATTACH_NODES_PAIRED = {
     "upperleg": "Upper Leg",
@@ -787,7 +906,210 @@ def attach_targets_for_slot(slot_hint):
         return [(f"Right {word}", False), (f"Left {word}", True)]
     if not side and key in ATTACH_NODES_SINGLE:
         return [(ATTACH_NODES_SINGLE[key], False)]
+    if not side and key in ATTACH_NODES_HELD:
+        return [(ATTACH_NODES_HELD[key], False)]
     return []
+
+ATTACH_NODE_NAMES = (
+    {v.lower() for v in ATTACH_NODES_SINGLE.values()}
+    | {f"{side} {w}".lower() for w in ATTACH_NODES_PAIRED.values()
+       for side in ("Left", "Right")}
+)
+
+
+def _default_attach_bases(rec_info):
+    """matrix_basis des nœuds d'attache du squelette par défaut de la race."""
+    is_female = "FEMALE" in (rec_info.get("npc_flags") or "")
+    imported = get_or_import_mesh(
+        get_default_skeleton(rec_info.get("race"), is_female), is_model=True)
+    if not imported:
+        return {}
+    tmpl, snap = imported
+    bases = {}
+    for t in tmpl:
+        base = re.sub(r"\.\d+$", "", t.name).lower()
+        if t.parent_bone and (t.type == 'EMPTY' or base in HELD_NODE_NAMES):
+            if (base in ATTACH_NODE_NAMES or base in HELD_NODE_NAMES) and t in snap:
+                bases[base] = (snap[t]['matrix_local'].copy(), t.parent_bone)
+    return bases
+
+
+def _attach_mesh_to_empty(ob, copied_map, ref_bases=None):
+    """Remplace un MESH servant de nœud d'attache par un EMPTY, avec la rotation
+    du squelette par défaut et l'origine ramenée de la queue à la tête de l'os."""
+    name = ob.name
+    base = re.sub(r"\.\d+$", "", name).lower()
+    loc, rot, sca = ob.matrix_basis.decompose()
+    ref = ref_bases.get(base) if ref_bases else None
+    arm = ob.parent
+    bones = arm.data.bones if arm and arm.type == 'ARMATURE' else None
+    parent_bone = ob.parent_bone
+    pinv = ob.matrix_parent_inverse.copy()
+    if ref is not None and bones is not None and ref[1] in bones:
+        # Squelette de mod (Animated Morrowind...) : ses nœuds d'attache sont
+        # décalés de 0.5-0.9 m. On reprend le nœud vanilla en entier (os +
+        # transform relatif à cet os), exactement ce que fait un NPC vanilla.
+        ref_ml, parent_bone = ref
+        loc, rot, sca = ref_ml.decompose()
+        pinv = Matrix.Identity(4)
+    else:
+        if ref is not None:
+            ref_rot = ref[0].to_quaternion()
+            conv = ref_rot.to_matrix() @ rot.to_matrix().inverted()   # C^-1 pour ce nœud
+            loc = conv @ loc
+            rot = ref_rot
+        bone = bones.get(parent_bone) if bones else None
+        if bone:
+            loc = loc - Vector((0.0, bone.length, 0.0))   # enfant d'os : origine à la queue
+    emp = bpy.data.objects.new(name + "_tmp", None)
+    for col in ob.users_collection:
+        col.objects.link(emp)
+    emp.parent = ob.parent
+    emp.parent_type = ob.parent_type
+    emp.parent_bone = parent_bone
+    emp.matrix_parent_inverse = pinv
+    emp.matrix_basis = Matrix.LocRotScale(loc, rot, sca)
+    for child in list(ob.children):
+        child.parent = emp
+    for mapping in (copied_map, GLOBAL_TEMPLATE_COPY_MAP):
+        for k in [k for k, v in mapping.items() if v is ob]:
+            mapping[k] = emp
+    bpy.data.objects.remove(ob, do_unlink=True)
+    emp.name = name
+
+# Nœuds des objets tenus ('Weapon Bone', 'Shield Bone') : recherche tolérante,
+# puis repli sur le nœud vanilla, puis sur la main.
+HELD_NODE_NAMES = {v.lower() for v in ATTACH_NODES_HELD.values()}
+HELD_FALLBACK_BONES = {
+    "weapon bone": ("Bip01 Hand.R", "Bip01 R Hand"),
+    "weapon bone left": ("Bip01 Hand.L", "Bip01 L Hand"),
+    "shield bone": ("Bip01 Hand.L", "Bip01 L Hand"),
+}
+
+
+def _find_node_anywhere(node_name, arm, cell_collection):
+    """Cherche le nœud (n'importe quel type, parenté quelconque) dans le NPC."""
+    low = node_name.lower()
+    pool = list(cell_collection.objects)
+    if arm is not None:
+        pool += [o for o in arm.children_recursive if o not in pool]
+    hits = [o for o in pool if re.sub(r"\.\d+$", "", o.name).lower() == low]
+    hits.sort(key=lambda o: o.type != 'EMPTY')
+    return hits[0] if hits else None
+
+
+def _dump_held_nodes(rec_info, arm, cell_collection):
+    """Diagnostic : où sont 'Shield Bone' / 'Weapon Bone' dans les squelettes ?"""
+    keys = ("shield", "weapon", "hand")
+    print("[DBGNODE] --- objets du NPC")
+    for o in cell_collection.objects:
+        if any(k in o.name.lower() for k in keys):
+            print(f"[DBGNODE]   {o.type:6s} '{o.name}' parent="
+                  f"{o.parent.name if o.parent else None} ptype={o.parent_type} "
+                  f"os='{o.parent_bone}'")
+    print("[DBGNODE] --- os de l'armature canonique")
+    print("[DBGNODE]  ", sorted(b.name for b in arm.data.bones
+                               if any(k in b.name.lower() for k in keys)))
+    imported = get_or_import_mesh(
+        get_default_skeleton(rec_info.get("race"),
+                             "FEMALE" in (rec_info.get("npc_flags") or "")),
+        is_model=True)
+    if imported:
+        print("[DBGNODE] --- squelette vanilla")
+        for t in imported[0]:
+            if any(k in t.name.lower() for k in keys):
+                print(f"[DBGNODE]   {t.type:6s} '{t.name}' parent="
+                      f"{t.parent.name if t.parent else None} ptype={t.parent_type} "
+                      f"os='{t.parent_bone}'")
+
+
+def _vanilla_bone_rel(rec_info, node_name, bones):
+    """'Shield Bone' / 'Weapon Bone' sont de vrais OS du squelette vanilla (base_anim).
+    Retourne (os parent présent dans `bones`, matrice de l'os relative à son parent)."""
+    imported = get_or_import_mesh(
+        get_default_skeleton(rec_info.get("race"),
+                             "FEMALE" in (rec_info.get("npc_flags") or "")),
+        is_model=True)
+    if not imported:
+        return None
+    low = node_name.lower()
+    for t in imported[0]:
+        if t.type != 'ARMATURE':
+            continue
+        b = next((x for x in t.data.bones if x.name.lower() == low), None)
+        if b is None or b.parent is None or b.parent.name not in bones:
+            continue
+        return b.parent.name, b.parent.matrix_local.inverted() @ b.matrix_local
+    return None
+
+
+def _fallback_attach_node(node_name, arm, attach_nodes, cell_collection, rec_info):
+    low = node_name.lower()
+    found = _find_node_anywhere(node_name, arm, cell_collection)
+    if found is not None:
+        attach_nodes[low] = found
+        print(f"[~] Nœud '{node_name}' trouvé hors attache : {found.type} "
+              f"'{found.name}' parent={found.parent.name if found.parent else None} "
+              f"os='{found.parent_bone}'")
+        return found
+    bones = arm.data.bones
+    emp = bpy.data.objects.new(node_name + "_fb", None)
+    for col in arm.users_collection:
+        col.objects.link(emp)
+    emp.parent = arm
+    emp.parent_type = 'BONE'
+    emp.matrix_parent_inverse = Matrix.Identity(4)
+    ref = _default_attach_bases(rec_info).get(low)
+    vb = _vanilla_bone_rel(rec_info, node_name, bones)
+    if vb is not None:
+        pbn, rel = vb
+        emp.parent_bone = pbn
+        # enfant d'os Blender : origine à la queue de l'os parent
+        emp.matrix_basis = Matrix.Translation((0.0, -bones[pbn].length, 0.0)) @ rel
+        how = f"os vanilla '{node_name}' relatif à '{pbn}'"
+    elif ref is not None and ref[1] in bones:
+        emp.parent_bone = ref[1]
+        emp.matrix_basis = ref[0]
+        how = f"nœud vanilla (os '{ref[1]}')"
+    else:
+        _dump_held_nodes(rec_info, arm, cell_collection)
+        bone = bones.get(node_name) or next(
+            (bones.get(n) for n in HELD_FALLBACK_BONES.get(low, ()) if bones.get(n)), None)
+        if bone is None:
+            bpy.data.objects.remove(emp, do_unlink=True)
+            cands = sorted(b.name for b in bones
+                           if any(k in b.name.lower() for k in ("hand", "weapon", "shield")))
+            print(f"[-] Nœud '{node_name}' : aucun os utilisable. Os candidats : {cands}")
+            return None
+        emp.parent_bone = bone.name
+        emp.matrix_basis = Matrix.Translation((0.0, -bone.length, 0.0))  # tête de l'os
+        how = f"os '{bone.name}' (orientation approximative)"
+    attach_nodes[low] = emp
+    print(f"[~] Nœud '{node_name}' absent : créé via {how}")
+    return emp
+
+
+# Delta transform rotation (degrés, X/Y/Z) appliquée aux nœuds des objets tenus.
+HELD_NODE_DELTA_ROT_DEG = {
+    "shield bone": (180.0, -90.0, 0.0),
+    "weapon bone": (180.0, 90.0, 0.0),
+}
+
+
+def apply_held_node_delta(node, node_name):
+    """Règle 'Delta Transform > Rotation' du nœud Shield/Weapon Bone (idempotent)."""
+    deg = HELD_NODE_DELTA_ROT_DEG.get(node_name.lower())
+    if deg is None:
+        return
+    eul = Euler([math.radians(a) for a in deg], 'XYZ')
+    if node.rotation_mode == 'QUATERNION':
+        node.delta_rotation_quaternion = eul.to_quaternion()
+    elif node.rotation_mode == 'AXIS_ANGLE':
+        node.rotation_mode = 'XYZ'
+        node.delta_rotation_euler = eul
+    else:
+        node.delta_rotation_euler = Euler(eul[:], node.rotation_mode)
+    print(f"[+] Delta rotation '{node_name}' : X {deg[0]:g} Y {deg[1]:g} Z {deg[2]:g}")
 
 
 def mirrored_copy(src, cell_collection):
@@ -852,6 +1174,8 @@ def _rest_remap(obj, src_arm, dst_arm):
 def place_reference(rec_info, ref, origin_offset, cell_collection):
     """Importe et place les meshes d'une référence. Retourne le nombre d'objets créés."""
     ref_id = ref.get("id", "Unknown_Ref")
+    global CURRENT_REC_TYPE
+    CURRENT_REC_TYPE = rec_info.get("type")
 
     # En mode npcs : [(chemin, indice_slot)] ; en mode cells : chemins simples
     mesh_entries = get_ref_mesh_paths(rec_info)
@@ -871,6 +1195,26 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
         (rx * ROT_SIGN_X, ry * ROT_SIGN_Y, rz * ROT_SIGN_Z),
         EULER_ORDER
     )
+
+    # Correctif de placement des NPCs dont le squelette est un modèle Animated Morrowind.
+    # Détection sur le chemin de N'IMPORTE QUELLE entrée du NPC (sous-chaîne), pas
+    # seulement sur le stem exact du mesh du record.
+    am_fix = None
+    if IMPORT_MODE == "npc":
+        _paths = [(e[0] if isinstance(e, tuple) else e) for e in mesh_entries]
+        _paths = [str(x).replace("\\", "/").lower() for x in _paths if x]
+        for _key, _fix in AM_SKELETON_FIXES.items():
+            _hit = next((x for x in _paths if _key in os.path.basename(x)), None)
+            if _hit:
+                am_fix = _fix
+                print(f"[~] Squelette '{_key}' détecté ({_hit}) : "
+                      f"+{_fix[0]} m en Z, rotation Z {_fix[1]}°")
+                break
+        if am_fix is None:
+            _am = [x for x in _paths if os.path.basename(x).startswith("am_")]
+            if _am:
+                print(f"[AM] '{rec_info.get('name') or ref_id}' : modèle(s) AM {_am} "
+                      f"(aucun correctif dans AM_SKELETON_FIXES)")
 
     any_imported = False
     created = 0
@@ -893,7 +1237,7 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
             is_skin = bool(entry[2]) if len(entry) > 2 else False
         else:
             mesh_path, slot_hint, is_skin = entry, None, False
-        imported = get_or_import_mesh(mesh_path)
+        imported = get_or_import_mesh(mesh_path, is_model=(slot_hint is None and not is_skin))
         if not imported:
             continue  # mesh introuvable ou import en erreur : déjà signalé
         template_objs, snapshot = imported
@@ -936,6 +1280,9 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
         elif slot_hint:
             occupied_slots.add(
                 re.sub(r"[\s_]+", "", slot_hint).lower())
+            for o in copied_map.values():
+                if o.type == 'MESH':
+                    o["mw_clothing"] = True
 
         # 2. Restauration des relations parent-enfant
         # On utilise l'instantané PRISTINE du fichier (les matrix_local des
@@ -993,6 +1340,11 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
 
         # Matrice globale de la référence dans la cellule
         mat_ref = mat_trans @ mat_rot @ mat_scale
+        if am_fix is not None:
+            # Squelettes Animated Morrowind mal calés : monter (monde) puis tourner sur Z (local)
+            dz, rz_deg = am_fix
+            mat_ref = (Matrix.Translation((0.0, 0.0, dz)) @ mat_trans @ mat_rot
+                       @ Matrix.Rotation(math.radians(rz_deg), 4, 'Z') @ mat_scale)
 
         for t_root, new_root in roots:
             # On combine la transformation de la cellule avec la matrice locale
@@ -1037,6 +1389,16 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
             for t_obj in template_objs:
                 new_obj = copied_map[t_obj]
                 if new_obj.parent_type != 'BONE' or new_obj.parent not in copied_vals:
+                    continue
+                if 'siltstrider' in norm_path:
+                    bone = new_obj.parent.data.bones.get(new_obj.parent_bone)
+                    head = bone.head_local.copy() if bone else Vector((0, 0, 0))
+                    mb = new_obj.matrix_basis.copy()      # transform local du NIF
+                    new_obj.parent_type = 'OBJECT'
+                    new_obj.parent_bone = ''
+                    new_obj.matrix_parent_inverse = Matrix.Identity(4)
+                    new_obj.matrix_basis = Matrix.Translation(head) @ mb
+                    print(f"[~] Silt Strider : '{new_obj.name}' reparenté à l'armature (head os = {tuple(round(x, 2) for x in head)})")
                     continue
                 t_root = _root_of(t_obj)
                 if 'matrix_world' not in snapshot[t_obj] or t_root not in copied_map:
@@ -1140,10 +1502,33 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
         # Enregistrement des nœuds d'attache du squelette ('Groin',
         # 'Left Ankle', ...) : l'importeur crée des empties déjà parentés
         # aux os animés correspondants (parent_type='BONE').
+        if slot_hint is None and not is_skin:
+            mesh_nodes = [o for o in copied_map.values()
+                          if o.type == 'MESH' and o.parent_bone
+                          and not any(m.type == 'ARMATURE' for m in o.modifiers)
+                          and re.sub(r"\.\d+$", "", o.name).lower() in ATTACH_NODE_NAMES]
+            if mesh_nodes:
+                ref_bases = _default_attach_bases(rec_info)
+                print(f"[~] {len(mesh_nodes)} nœud(s) d'attache MESH convertis "
+                      f"({'rotation du squelette par défaut' if ref_bases else 'sans référence'})")
+                for ob in mesh_nodes:
+                    _attach_mesh_to_empty(ob, copied_map, ref_bases)
+
         for new_obj in copied_map.values():
             if new_obj.type == 'EMPTY' and new_obj.parent_bone:
                 base = re.sub(r"\.\d+$", "", new_obj.name).lower()
                 attach_nodes[base] = new_obj
+
+        if IMPORT_MODE == "npc" and DEBUG_MESH and slot_hint is None and not is_skin:
+            ref = _default_attach_bases(rec_info)
+            for base, n in sorted(attach_nodes.items()):
+                r = ref.get(base)
+                if r is None:
+                    print(f"[ATT] {base:18s} pas de réf vanilla"); continue
+                ml = n.matrix_parent_inverse @ n.matrix_basis
+                dl = (ml.translation - r.translation).length
+                da = math.degrees(ml.to_quaternion().rotation_difference(r.to_quaternion()).angle)
+                print(f"[ATT] {base:18s} {n.type:5s} bone={n.parent_bone:14s} dLoc={dl:.3f} dRot={da:.0f}°")
 
         # Les mains sont désormais skinnées à 100 % sur les os 'Bip01
         # Hand.L/R' canoniques (voir plus haut) : elles suivent l'animation
@@ -1249,20 +1634,34 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
 
                 for node_name, objs in plan:
                     node = attach_nodes.get(node_name.lower())
+                    if node is None and canonical is not None:
+                        node = _fallback_attach_node(node_name, canonical, attach_nodes,
+                                                    cell_collection, rec_info)
                     if node is None:
                         print(f"[-] Nœud d'attache '{node_name}' introuvable "
                               f"(slot {slot_hint})")
                         continue
+                    apply_held_node_delta(node, node_name)
                     # Sans ce flush, matrix_local renvoie des valeurs périmées
                     # (pré-restauration) et l'attache hérite d'orientations fausses.
                     bpy.context.view_layer.update()
+                    held_yaw = (HELD_AM_YAW if (slot_hint or "").lower() == "weapon"
+                                and os.path.basename(mesh_path.replace("\\", "/"))
+                                .lower().startswith("am_") else 0.0)
+                    if held_yaw:
+                        # Rotation verticale monde (repère du NPC), convertie dans le
+                        # repère local du nœud : reste valable pendant l'animation.
+                        nw = node.matrix_world.to_quaternion().to_matrix()
+                        rl = (nw.inverted()
+                              @ Matrix.Rotation(math.radians(held_yaw), 3, 'Z')
+                              @ nw).to_4x4()
                     for ob in objs:
                         local = pristine_locals[ob]
                         ob.parent = node
                         ob.parent_type = 'OBJECT'
                         ob.parent_bone = ''
                         ob.matrix_parent_inverse = Matrix.Identity(4)
-                        ob.matrix_basis = local
+                        ob.matrix_basis = (rl @ local) if held_yaw else local
                     print(f"[+] Attache {len(objs)} pièce(s) -> "
                           f"'{node_name}' ({slot_hint})")
 
@@ -1319,7 +1718,7 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
         stems = {_stem(o.name) for o in skin_part_objs}
         removed = 0
         for ob in list(cell_collection.objects):
-            if ob.type != 'MESH':
+            if ob.type != 'MESH' or ob.get("mw_clothing"):
                 continue
             nm = ob.name.lower()
             if _stem(ob.name) in stems and \
@@ -1896,16 +2295,22 @@ def rebuild_cells_in_blender():
         if IMPORT_MODE != "npc" and not cell_is_interior(cell):
             build_exterior_ground(cell, origin_offset, cell_collection)
 
-        for ref in references:
-            if ref.get("deleted", False):
-                continue
+        if IMPORT_MODE == "npc":
+            # Mode npc : seuls les NPCs/creatures (should_import filtre deja)
+            for ref in references:
+                if ref.get("deleted", False):
+                    continue
 
-            rec_info = record_map.get((ref.get("id") or "").lower(), {})
+                rec_info = record_map.get((ref.get("id") or "").lower(), {})
 
-            if not should_import(rec_info.get("type")):
-                continue
+                if not should_import(rec_info.get("type")):
+                    continue
 
-            object_count += place_reference(rec_info, ref, origin_offset, cell_collection)
+                object_count += place_reference(rec_info, ref, origin_offset, cell_collection)
+        else:
+            # Interior / exterior : decor, puis NPCs/creatures si --npcs 1
+            object_count += import_cell_refs(cell, record_map, origin_offset,
+                                             cell_collection, WITH_NPCS)
 
         print(f"[+] Finished cell: {cell_label}")
 
@@ -1928,7 +2333,7 @@ def rebuild_cells_in_blender():
 # (necessite `import time` en haut du fichier)
 
 INTERIOR_MAX_DEPTH = int(get_arg("interior_depth", 3))  # portes interieur -> interieur suivies
-FULL_WITH_NPCS = get_arg("npcs", "1") != "0"             # --npcs 0 : ignorer les NPCs
+FULL_WITH_NPCS = WITH_NPCS                                 # --npcs 0 : ignorer les NPCs (alias historique)
 
 
 def _set_import_mode(mode):
@@ -2081,6 +2486,7 @@ def finalize_and_save(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     print(f"[+] Fixing textures + saving {path}")
     fix_missing_textures()
+    zero_material_emission()
     # Le mode REST n'etait necessaire que pour les calculs de bake : le restaurer,
     # sinon l'armature reste evaluee au repos (T-Pose figee).
     for arm in bpy.data.armatures:
@@ -2245,6 +2651,54 @@ def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
 
 
 # ==========================================
+# MATERIAUX : emissive color a 0
+# ==========================================
+
+def _zero_emission_tree(nt, seen):
+    """Emission a 0 dans un node tree (et ses groupes). Retourne le nombre d'entrees traitees."""
+    if nt is None or nt.as_pointer() in seen:
+        return 0
+    seen.add(nt.as_pointer())
+    count = 0
+    for node in nt.nodes:
+        if node.type == 'GROUP':
+            count += _zero_emission_tree(node.node_tree, seen)
+            continue
+        if node.type == 'BSDF_PRINCIPLED':
+            names, strength = ("Emission Color", "Emission"), "Emission Strength"
+        elif node.type == 'EMISSION':
+            names, strength = ("Color",), "Strength"
+        else:
+            continue
+        for nm in names:
+            sock = node.inputs.get(nm)
+            if sock is None:
+                continue
+            if sock.is_linked:
+                if sock.links[0].from_node.type == 'TEX_IMAGE':
+                    # glow map : on garde la texture mais on coupe l'intensite
+                    st = node.inputs.get(strength)
+                    if st is not None and not st.is_linked:
+                        st.default_value = 0.0
+                    count += 1
+                    continue
+                for lk in list(sock.links):      # RGB/Mix/... : on coupe le lien
+                    nt.links.remove(lk)
+            sock.default_value = (0.0, 0.0, 0.0, 1.0)
+            count += 1
+    return count
+
+
+def zero_material_emission():
+    """Met a 0 (noir) la couleur d'emission des materiaux : Principled BSDF et noeuds
+    Emission, y compris dans les groupes, et meme si l'entree est reliee (sauf texture
+    image : intensite a 0)."""
+    seen = set()
+    count = sum(_zero_emission_tree(m.node_tree, seen) for m in bpy.data.materials)
+    print(f"[+] Emission des materiaux mise a 0 ({count} entree(s))")
+
+
+# ==========================================
 # TEXTURES
 # ==========================================
 
@@ -2333,6 +2787,7 @@ if not FULL_MODE:   # en mode full, chaque .blend est ecrit (textures corrigees)
     print()
     print("[+] Fixing missing textures...")
     fix_missing_textures()
+    zero_material_emission()
 
     print()
     print("[+] Saving Blender file...")

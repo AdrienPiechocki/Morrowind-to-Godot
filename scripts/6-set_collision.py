@@ -21,16 +21,16 @@ import math
 
 count = 0
 for obj in bpy.data.objects:
-    if obj.type != 'MESH':
-        continue
-    if obj.name.endswith("-col") or obj.name.endswith("-convcol"):
-        continue
-
-    dims = obj.dimensions
-    diameter = math.sqrt(dims.x**2 + dims.y**2 + dims.z**2)
-    if diameter >= THRESHOLD:
-        obj.name += SUFFIXE
-        count += 1
+    for child in obj.children:
+        if "collision" in child.name.lower(): 
+            for _child in child.children:
+                if _child.type != 'MESH':
+                    continue
+                if _child.name.endswith("-col") or _child.name.endswith("-convcol"):
+                    continue
+                
+                _child.name += SUFFIXE
+                count += 1
 
 print(f"[+] {count} objets > {THRESHOLD} unites renommes avec {SUFFIXE}")
 
