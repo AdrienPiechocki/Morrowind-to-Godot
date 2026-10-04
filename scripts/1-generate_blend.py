@@ -2481,13 +2481,19 @@ def find_interior_doors(cell, record_map, interiors_by_name):
 
 
 def reset_scene():
-    """Repart d'une scene vide entre deux fichiers : objets, collections, donnees
-    orphelines (meshes, materiaux, images, armatures, actions) et caches lies a Blender."""
+    """Repart d'une scene vide entre deux fichiers (suppression en batch)."""
     global _SCRATCH, water_mat, NPC_RACE_SKINS_MISSING
-    for obj in list(bpy.data.objects):          # y compris les templates du cache d'import
-        bpy.data.objects.remove(obj, do_unlink=True)
-    for coll in list(bpy.data.collections):
-        bpy.data.collections.remove(coll)
+    t0 = time.time()
+
+    # Un seul appel au lieu d'un unlink O(n) par objet
+    bpy.data.batch_remove(set(bpy.data.objects) | set(bpy.data.collections))
+
+    for coll in (bpy.data.meshes, bpy.data.armatures, bpy.data.actions,
+                 bpy.data.materials, bpy.data.images, bpy.data.curves,
+                 bpy.data.cameras, bpy.data.lights):
+        if len(coll):
+            bpy.data.batch_remove(set(coll))
+
     imported_mesh_cache.clear()
     imported_mesh_snapshots.clear()
     GLOBAL_TEMPLATE_COPY_MAP.clear()
@@ -2496,11 +2502,9 @@ def reset_scene():
     water_mat = None
     _SCRATCH = None
     NPC_RACE_SKINS_MISSING = False
-    try:
-        bpy.data.orphans_purge(do_recursive=True)
-    except TypeError:
-        bpy.data.orphans_purge()
+
     bpy.context.view_layer.update()
+    print(f"[+] Scene reset en {time.time() - t0:.1f}s", flush=True)
 
 
 def finalize_and_save(path):
