@@ -62,8 +62,8 @@ for f in "${FILES[@]}"; do
     for script in tga_to_png rebuild_mat no_lube zero_emission export_glb; do
         extra=()
         case "$script" in
-            tga_to_png)    extra=(--textures-dir "$TEX_DIR") ;;
-            7-export_glb)  extra=(--output "$glb" --anims "$ANIMS") ;;
+            tga_to_png)  extra=(--textures-dir "$TEX_DIR") ;;
+            export_glb)  extra=(--output "$glb" --anims "$ANIMS") ;;
         esac
         if ! bl --background --python-exit-code 1 --python "scripts/${script}.py" -- --blend "$abs" ${extra[@]+"${extra[@]}"} $VFLAG; then
             echo "[ERROR] ${script}.py failed on $f" >&2
