@@ -8,6 +8,9 @@ import os
 import sys
 import bpy
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mwlog import vprint, eprint, Progress
+
 
 def get_arg(name, default=None):
     args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -52,11 +55,16 @@ def zero_tree(nt, seen):
 
 path = os.path.abspath(get_arg("blend", "morrowind.blend"))
 bpy.ops.wm.open_mainfile(filepath=path)
-print(f"[+] Loaded: {path}")
+vprint(f"[+] Loaded: {path}")
 
 seen = set()
-total = sum(zero_tree(m.node_tree, seen) for m in bpy.data.materials)
-print(f"[+] Emission a 0 : {total} entree(s) sur {len(bpy.data.materials)} materiau(x)")
+total = 0
+_mats = list(bpy.data.materials)
+with Progress(len(_mats), "Emission", disable=not _mats) as _bar:
+    for m in _mats:
+        total += zero_tree(m.node_tree, seen)
+        _bar.update()
+vprint(f"[+] Emission zeroed: {total} entry/entries across {len(bpy.data.materials)} material(s)")
 
 bpy.ops.wm.save_as_mainfile(filepath=path, compress=True)
-print(f"[+] Saved: {path}")
+vprint(f"[+] Saved: {path}")

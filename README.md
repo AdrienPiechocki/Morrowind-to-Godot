@@ -42,12 +42,12 @@ The pipeline reads your game data (through `openmw.cfg` or a *Data Files* folder
 └── scripts/
     ├── mwlog.py            # shared vprint / eprint / progress bar
     ├── openmw_cfg.py       # reads openmw.cfg, extracts BSAs, merges plugins
-    ├── 1-generate_blend.py # builds the Blender scene
-    ├── 4-no_lube.py        # materials: roughness 1, specular 0
-    ├── 5-cleanup.py        # hides shadows/markers, removes decals and door icons
-    ├── 6-set_collision.py  # adds the -col suffix to collision meshes
-    ├── 6b-zero_emission.py # final pass: emission set to 0
-    └── 7-export_glb.py     # splits animations into NLA tracks and exports the GLB
+    ├── generate_blend.py # builds the Blender scene
+    ├── no_lube.py        # materials: roughness 1, specular 0
+    ├── cleanup.py        # hides shadows/markers, removes decals and door icons
+    ├── set_collision.py  # adds the -col suffix to collision meshes
+    ├── zero_emission.py # final pass: emission set to 0
+    └── export_glb.py     # splits animations into NLA tracks and exports the GLB
 ```
 
 ## Usage
@@ -71,8 +71,8 @@ The pipeline reads your game data (through `openmw.cfg` or a *Data Files* folder
 1. **Data source**: `openmw.cfg` is auto-detected (`~/.config/openmw`, Flatpak, Windows, macOS) and remembered in `config.json`.
 2. **Preparation** (`openmw_cfg.py prepare`): extracts BSAs into `data/`, converts plugins with `tes3conv`, merges them in load order and writes `output.json`.
 3. **Mode selection** (interactive prompts, see below).
-4. **Blender**: `1-generate_blend.py`, then `4`, `5`, `6`, `6b`.
-5. **Export**: `7-export_glb.py` produces the `.glb`.
+4. **Blender**: `generate_blend.py`, then `no_lube`, `cleanup`, `set_collision`, `zero_emission`.
+5. **Export**: `export_glb.py` produces the `.glb`.
 6. **Cleanup**: temporary `output*` files are deleted.
 
 ### Import modes
@@ -110,7 +110,7 @@ Import the `.glb` files into Godot. `manifest.json` lets you link exteriors and 
 
 ## Godot integration
 
-- Collision meshes get the **`-col`** suffix (Trimesh, precise). For convex shapes (lighter), set `SUFFIXE = "-convcol"` in `scripts/6-set_collision.py`.
+- Collision meshes get the **`-col`** suffix (Trimesh, precise). For convex shapes (lighter), set `SUFFIXE = "-convcol"` in `scripts/set_collision.py`.
 - Shadow objects, editor markers, door icons and decals are hidden or removed before export.
 - Materials are made matte (roughness 1, specular 0, emission 0) to match Godot's lighting.
 - Animations show up as separate clips in the `AnimationPlayer` (one NLA track per sequence, e.g. `Idle2`, `SpellCast_Equip`).
@@ -122,7 +122,7 @@ Import the `.glb` files into Godot. `manifest.json` lets you link exteriors and 
 - Progress bars go through **stderr**, so they stay visible even when `run.sh` silences Blender's stdout outside verbose mode. In a log file (`full` mode, `export/post.log`), they shrink to one line every 10%.
 
 ```
-[██████████░░░░░░░░░░░░░░░░░░] Interieurs 3/12 > Décor 45/300  15% 0:12 ETA 0:40
+[██████████░░░░░░░░░░░░░░░░░░] Interiors 3/12 > Decor 45/300  15% 0:12 ETA 0:40
 ```
 
 ## Known limitations

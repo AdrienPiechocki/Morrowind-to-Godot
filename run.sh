@@ -5,8 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Options : --anims <prefixes|all>  (ex. --anims idle) ; --npcs 0|1  (NPCs dans les scenes interior/exterior/full)
+#           -v | --verbose  (affiche tous les messages des scripts Python et de Blender)
 USER_ANIMS=""
 USER_NPCS=""
+VFLAG=""          # "--verbose" transmis aux scripts Python (vide = barre de progression seule)
 while [ $# -gt 0 ]; do
     case "$1" in
         --anims)   [ $# -ge 2 ] || { echo "[ERROR] --anims attend une valeur"; exit 1; }
@@ -15,9 +17,16 @@ while [ $# -gt 0 ]; do
         --npcs)    [ $# -ge 2 ] || { echo "[ERROR] --npcs attend 0 ou 1"; exit 1; }
                    USER_NPCS="$2"; shift 2 ;;
         --npcs=*)  USER_NPCS="${1#--npcs=}"; shift ;;
+        -v|--verbose) VFLAG="--verbose"; shift ;;
         *)         echo "[ERROR] Option inconnue : $1"; exit 1 ;;
     esac
 done
+
+# Blender : hors verbose, son stdout est coupe (la barre de progression et les
+# erreurs des scripts passent par stderr, donc restent visibles).
+bl() {
+    if [ -n "$VFLAG" ]; then blender "$@"; else blender "$@" >/dev/null; fi
+}
 
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
@@ -108,6 +117,7 @@ if [ -n "$OPENMW_CFG" ]; then
         --cache "$SCRIPT_DIR/data" \
         --out output.json \
         --paths output_paths.json \
+        $VFLAG \
         || fail "Data preparation failed."
 
     MESHES_ARG=$(python3 -c "import json, os; print(os.pathsep.join(json.load(open('output_paths.json'))['meshes']))")
@@ -486,9 +496,9 @@ fi
 # ==========================================
 # 7. Conversion Blender (scripts 1-6)
 # ==========================================
-step 7 "Blender conversion (scripts 1-6)"
+step 7 "Blender conversion"
 
-echo "[..] Launching Blender (script 1/6: generation)..."
+echo "[..] Launching Blender (script 1: generation)..."
 BLENDER_MODE="$IMPORT_MODE"
 [ "$IMPORT_MODE" = "exterior" ] && BLENDER_MODE="interior"
 BLENDER_ARGS=(--json output.json --meshes "$MESHES_ARG" --textures "$TEXTURES_ARG" --mode "$BLENDER_MODE")
@@ -500,19 +510,20 @@ if [ "$IMPORT_MODE" = "interior" ] || [ "$IMPORT_MODE" = "exterior" ]; then
     BLENDER_ARGS+=(--npcs "$WITH_NPCS")
 fi
 [ -n "$SCENE_ANIMS" ] && BLENDER_ARGS+=(--anims "$SCENE_ANIMS")
+[ -n "$VFLAG" ] && BLENDER_ARGS+=(--verbose)
 
 # --python-exit-code 1 : si le script plante, on s'arrête (sinon Blender sort en
 # code 0 et la suite du pipeline traite un morrowind.blend périmé).
-blender --background --python-exit-code 1 --python scripts/1-generate_blend.py -- "${BLENDER_ARGS[@]}"
+bl --background --python-exit-code 1 --python scripts/generate_blend.py -- "${BLENDER_ARGS[@]}"
 
-# Post-processing of one .blend (scripts 4-6), then GLB export (script 7).
-#   post_process <blend> <glb> [options for 7-export_glb.py]
+# Post-processing of one .blend (scripts), then GLB export (script 7).
+#   post_process <blend> <glb> [options for export_glb.py]
 # When POST_LOG is set (full mode, many files) Blender's output goes to that log.
 run_blender() {
     if [ -n "${POST_LOG:-}" ]; then
         blender --background --python "$@" >> "$POST_LOG" 2>&1
     else
-        blender --background --python "$@"
+        bl --background --python "$@"
     fi
 }
 
@@ -520,12 +531,12 @@ post_process() {
     local blend="$1" glb="$2"
     shift 2
     local script
-    for script in 4-no_lube 5-cleanup 6-set_collision 6b-zero_emission; do
+    for script in no_lube cleanup set_collision zero_emission; do
         [ -z "${POST_LOG:-}" ] && echo "[..] Launching Blender (script ${script})..."
-        run_blender "scripts/${script}.py" -- --blend "$blend"
+        run_blender "scripts/${script}.py" -- --blend "$blend" $VFLAG
     done
     [ -z "${POST_LOG:-}" ] && echo "[..] Exporting $(basename "$glb")..."
-    run_blender scripts/7-export_glb.py -- --blend "$blend" --output "$glb" "$@"
+    run_blender scripts/export_glb.py -- --blend "$blend" --output "$glb" $VFLAG "$@"
 }
 
 if [ "$IMPORT_MODE" = "full" ]; then
@@ -549,9 +560,9 @@ if [ "$IMPORT_MODE" = "full" ]; then
     unset POST_LOG
     ok "$TOTAL file(s) processed (Blender log: export/post.log)."
 else
-    for script in 4-no_lube 5-cleanup 6-set_collision 6b-zero_emission; do
+    for script in no_lube cleanup set_collision zero_emission; do
         echo "[..] Launching Blender (script ${script})..."
-        blender --background --python "scripts/${script}.py"
+        bl --background --python "scripts/${script}.py" -- $VFLAG
     done
 
     ok "Blender scripts executed."
@@ -562,8 +573,9 @@ else
     step 8 "Export GLB"
     echo "[..] Exporting..."
     EXPORT_ARGS=()
-    [ -n "$SCENE_ANIMS" ] && EXPORT_ARGS=(--anims "$SCENE_ANIMS")
-    blender --background --python scripts/7-export_glb.py ${EXPORT_ARGS[@]+-- "${EXPORT_ARGS[@]}"}
+    [ -n "$SCENE_ANIMS" ] && EXPORT_ARGS+=(--anims "$SCENE_ANIMS")
+    [ -n "$VFLAG" ] && EXPORT_ARGS+=(--verbose)
+    bl --background --python scripts/export_glb.py -- ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
     ok "morrowind.glb generated."
 fi
 

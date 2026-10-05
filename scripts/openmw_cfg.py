@@ -20,11 +20,18 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mwlog import vprint, eprint, Progress
+
 TES3_EXT = (".esm", ".esp")
 
 
 def log(msg):
-    print(msg, flush=True)
+    """Message de suivi : visible seulement avec -v/--verbose (les [ERROR] restent affichees)."""
+    if str(msg).startswith("[ERROR]"):
+        eprint(msg)
+    else:
+        vprint(msg, flush=True)
 
 
 # ==========================================
@@ -102,7 +109,7 @@ def parse_cfg(cfg_path, _seen=None):
 
         if key in ("data", "data-local"):
             if "?" in val:  # ?global? / ?local? : dépend de l'installation d'OpenMW
-                log(f"[!] Token non résolu, dossier ignoré : {val}")
+                log(f"[!] Unresolved token, folder skipped: {val}")
                 continue
             p = Path(val)
             if not p.is_absolute():
@@ -204,22 +211,25 @@ def extract_archives(cfg, cache, bsatool):
         if p:
             archives.append(p)
         else:
-            log(f"[!] Archive introuvable dans les dossiers data : {name}")
+            log(f"[!] Archive not found in data folders: {name}")
 
     stamp = [[str(p), p.stat().st_size, int(p.stat().st_mtime)] for p in archives]
     try:
         if json.loads(stamp_file.read_text()) == stamp:
-            log("[OK] Cache BSA à jour, rien à extraire.")
+            log("[OK] BSA cache up to date, nothing to extract.")
             return
     except (OSError, ValueError):
         pass
 
     cache.mkdir(parents=True, exist_ok=True)
     # Ordre de priorité croissante : un archive plus tardif écrase les fichiers du précédent
-    for p in archives:
-        log(f"[..] Extraction de {p.name} vers {cache}/ ...")
-        subprocess.run([bsatool, "extractall", str(p), str(cache)],
-                       check=True, stdout=subprocess.DEVNULL)
+    with Progress(len(archives), "BSA", disable=not archives) as bar:
+        for p in archives:
+            log(f"[..] Extracting {p.name} to {cache}/ ...")
+            bar.set_label(f"BSA {p.name}")
+            subprocess.run([bsatool, "extractall", str(p), str(cache)],
+                           check=True, stdout=subprocess.DEVNULL)
+            bar.update()
     stamp_file.parent.mkdir(parents=True, exist_ok=True)
     stamp_file.write_text(json.dumps(stamp))
 
@@ -241,7 +251,7 @@ def convert_plugin(plugin, cache, tes3conv):
         # Typiquement un plugin OpenMW-only (records LUAL/LUAS...) que tes3conv ne
         # sait pas lire : sans effet sur la géométrie, on l'ignore.
         reason = (res.stderr or res.stdout or "").strip().splitlines()
-        log(f"[!] Plugin ignoré (tes3conv a échoué) : {plugin.name}"
+        log(f"[!] Plugin skipped (tes3conv failed): {plugin.name}"
             + (f" — {reason[-1]}" if reason else ""))
         try:
             out.unlink()
@@ -368,17 +378,17 @@ def merge_plugins(plugins):
         out.append(rec)
 
     active = sum(1 for v in by_cell.values() for r in v if not r.get("deleted"))
-    log(f"[+] Cells fusionnées : {len(cells)} | références actives : {active}")
-    log(f"[+] Références redéfinies par un plugin : {stats['overridden']} | "
-        f"déplacées : {stats['moved']} | supprimées : {stats['deleted']}")
+    log(f"[+] Cells merged: {len(cells)} | active references: {active}")
+    log(f"[+] References overridden by a plugin: {stats['overridden']} | "
+        f"moved: {stats['moved']} | deleted: {stats['deleted']}")
     if stats["no_translation"]:
-        log(f"[!] {stats['no_translation']} référence(s) sans 'translation' ignorée(s)")
+        log(f"[!] {stats['no_translation']} reference(s) without 'translation' ignored")
     if stats["high_total"] >= 50:
         ratio = stats["high_matched"] / stats["high_total"]
         if ratio < 0.9:
-            log(f"[!] Seulement {ratio:.0%} des références pointant vers un master ont été retrouvées. "
-                "La sémantique de mast_index diffère peut-être de celle supposée "
-                "(0 = ce plugin, k = k-ième master) : vérifie avec jq.")
+            log(f"[!] Only {ratio:.0%} of the references pointing to a master were found. "
+                "The semantics of mast_index may differ from what was assumed "
+                "(0 = this plugin, k = k-th master): check with jq.")
     return out
 
 
@@ -397,7 +407,7 @@ def cmd_find(_args):
 def cmd_prepare(args):
     cfg_path = Path(args.cfg).expanduser()
     if not cfg_path.is_file():
-        log(f"[ERROR] openmw.cfg introuvable : {cfg_path}")
+        log(f"[ERROR] openmw.cfg not found: {cfg_path}")
         return 1
     cfg = parse_cfg(cfg_path)
     cache = Path(args.cache).resolve()
@@ -405,22 +415,25 @@ def cmd_prepare(args):
     bsatool = str(Path(args.bsatool).resolve())
 
     log(f"[+] openmw.cfg : {cfg_path}")
-    log(f"[+] {len(cfg.data)} dossier(s) data, {len(cfg.content)} plugin(s), {len(cfg.archives)} archive(s)")
+    log(f"[+] {len(cfg.data)} data folder(s), {len(cfg.content)} plugin(s), {len(cfg.archives)} archive(s)")
     if not cfg.data or not cfg.content:
-        log("[ERROR] Aucun data= ou content= dans ce openmw.cfg (config= non résolu ?)")
+        log("[ERROR] No data= or content= entry in this openmw.cfg (unresolved config=?)")
         return 1
 
     extract_archives(cfg, cache, bsatool)
 
     plugins = []
     skipped = []
+    bar = Progress(len(cfg.content), "Plugins", disable=not cfg.content)
+    bar.__enter__()
     for name in cfg.content:
+        bar.update()
         if not name.lower().endswith(TES3_EXT):
-            log(f"[~] Ignoré (format non géré par tes3conv) : {name}")
+            log(f"[~] Skipped (format not handled by tes3conv): {name}")
             continue
         p = find_in_data(cfg, name)
         if not p:
-            log(f"[!] Plugin introuvable dans les dossiers data : {name}")
+            log(f"[!] Plugin not found in data folders: {name}")
             continue
         json_path = convert_plugin(p, cache, tes3conv)
         if json_path is None:
@@ -428,14 +441,15 @@ def cmd_prepare(args):
             continue
         with open(json_path, "r", encoding="utf-8") as f:
             plugins.append((p.name, json.load(f)))
+    bar.close()
 
     if not any(n.lower() == "morrowind.esm" for n, _ in plugins):
-        log("[ERROR] Morrowind.esm n'est pas dans content= (ou introuvable).")
+        log("[ERROR] Morrowind.esm is not in content= (or could not be found).")
         return 1
 
     if skipped:
-        log(f"[!] {len(skipped)} plugin(s) non convertible(s), ignoré(s) : {', '.join(skipped)}")
-    log(f"[..] Fusion de {len(plugins)} plugin(s) dans l'ordre de chargement ...")
+        log(f"[!] {len(skipped)} plugin(s) could not be converted, skipped: {', '.join(skipped)}")
+    log(f"[..] Merging {len(plugins)} plugin(s) in load order ...")
     merged = merge_plugins(plugins)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, separators=(",", ":"))
@@ -446,8 +460,8 @@ def cmd_prepare(args):
     }
     with open(args.paths, "w", encoding="utf-8") as f:
         json.dump(paths, f, indent=2)
-    log(f"[OK] {args.out} et {args.paths} générés "
-        f"({len(paths['meshes'])} dossier(s) meshes, {len(paths['textures'])} textures).")
+    log(f"[OK] {args.out} and {args.paths} generated "
+        f"({len(paths['meshes'])} meshes folder(s), {len(paths['textures'])} textures).")
     return 0
 
 
@@ -464,6 +478,7 @@ def main():
     p.add_argument("--cache", default="data")
     p.add_argument("--out", default="output.json")
     p.add_argument("--paths", default="output_paths.json")
+    p.add_argument("-v", "--verbose", action="store_true", help="affiche tous les messages de suivi")
     p.set_defaults(func=cmd_prepare)
 
     args = ap.parse_args()

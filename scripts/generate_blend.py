@@ -14,6 +14,9 @@ import subprocess
 import numpy as np
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mwlog import vprint, eprint, Progress, VERBOSE
+
 # ==========================================
 # Parse CLI arguments (after Blender's --)
 # ==========================================
@@ -85,7 +88,7 @@ def parse_grid_arg(value):
     if len(nums) == 2:
         nums = nums + nums
     if len(nums) != 4:
-        print(f"[ERROR] --grid invalide : '{value}' (attendu 'x,y' ou 'x1,y1:x2,y2')")
+        eprint(f"[ERROR] invalid --grid: '{value}' (expected 'x,y' or 'x1,y1:x2,y2')")
         sys.exit(1)
     x1, y1, x2, y2 = nums
     return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
@@ -101,7 +104,7 @@ _mode_arg = get_arg("mode", "cell")
 FULL_MODE = (_mode_arg == "full")
 IMPORT_MODE = "cell" if FULL_MODE else _mode_arg
 if FULL_MODE and TARGET_GRID is None:
-    print("[ERROR] --mode full necessite --grid")
+    eprint("[ERROR] --mode full requires --grid")
     sys.exit(1)
 
 # NPCs/creatures places dans les scenes interior/exterior/full : --npcs 1|0
@@ -445,10 +448,10 @@ def build_npc_mesh_paths(rec):
             if zone in held_done:
                 continue          # un seul objet par main
             held_done.add(zone)
-            print(f"[+] Objet tenu: {item_id} -> {entry[1]}")
+            vprint(f"[+] Held item: {item_id} -> {entry[1]}")
         if rank < top[zone]:
-            print(f"[-] '{item_id}' [{entry[1]}] masqué (zone '{zone}' couverte "
-                  f"par {'une robe' if top[zone] == 3 else 'une armure'})")
+            vprint(f"[-] '{item_id}' [{entry[1]}] hidden (zone '{zone}' covered "
+                  f"par {'a robe' if top[zone] == 3 else 'armor'})")
             continue
         entries.append(entry)
 
@@ -458,16 +461,16 @@ def build_npc_mesh_paths(rec):
         if held:
             wid, w, slot = held
             entries.append((w["mesh"], slot))
-            print(f"[+] Objet tenu: {wid} -> {slot}")
+            vprint(f"[+] Held item: {wid} -> {slot}")
         else:
-            print("[HELD] aucune arme retenue")
+            vprint("[HELD] no weapon selected")
         if rec.get("inventory"):
-            print("[HELD] inventaire de '%s' :" % (rec.get("name") or rec.get("id")))
+            vprint("[HELD] inventory of '%s':" % (rec.get("name") or rec.get("id")))
             for _c, _i in rec.get("inventory", []):
                 _r = weapon_map.get(str(_i).lower()) or {}
                 _d = _r.get("data") or {}
-                print("[HELD]   %s x%s : %s%s" % (
-                    _i, _c, record_type_map.get(str(_i).lower(), "INCONNU"),
+                vprint("[HELD]   %s x%s : %s%s" % (
+                    _i, _c, record_type_map.get(str(_i).lower(), "UNKNOWN"),
                     (" type=%s mesh=%s dmg=%s/%s/%s" % (
                         _d.get("weapon_type"), _r.get("mesh"),
                         _d.get("chop_max"), _d.get("slash_max"), _d.get("thrust_max"))
@@ -533,9 +536,9 @@ def build_npc_mesh_paths(rec):
         )
         if found_skins == 0 and uses_placeholder_skeleton:
             NPC_RACE_SKINS_MISSING = True
-            print(f"[!] Aucune peau de race pour "
-                  f"'{rec.get('name') or rec.get('id')}' (race '{race}') : "
-                  "placeholders génériques conservés")
+            vprint(f"[!] No race skin for "
+                  f"'{rec.get('name') or rec.get('id')}' (race '{race}'): "
+                  "generic placeholders kept")
 
     # Déduplication :
     # - (chemin, slot) : un même fichier de pièce peut être référencé par
@@ -625,7 +628,7 @@ def ensure_kf_sibling(nif_path):
     if os.path.exists(xkf):
         try:
             os.symlink(os.path.basename(xkf), kf_path)
-            print(f"[+] Linked KF: {kf_path} -> {os.path.basename(xkf)}")
+            vprint(f"[+] Linked KF: {kf_path} -> {os.path.basename(xkf)}")
         except OSError:
             pass
 
@@ -675,7 +678,7 @@ def prune_action_to_prefixes(action, prefixes):
         if any(name.lower().startswith(p) for p in prefixes):
             ranges.append((start, stop))
     if not ranges:
-        print(f"[~] Action '{action.name}': aucun clip {prefixes} trouve, animations laissees telles quelles")
+        vprint(f"[~] Action '{action.name}': no clip matching {prefixes} found, animations left untouched")
         return None
 
     kept = removed = 0
@@ -727,10 +730,10 @@ def prune_imported_animations(objs):
         try:
             res = prune_action_to_prefixes(act, ANIM_KEEP_PREFIXES)
         except Exception as e:
-            print(f"[-] Prune animations '{act.name}': {type(e).__name__}: {e}")
+            vprint(f"[-] Prune animations '{act.name}': {type(e).__name__}: {e}")
             continue
         if res:
-            print(f"[+] Animations {ANIM_KEEP_PREFIXES}: {res[0]} keyframes gardees, {res[1]} supprimees ({obj.name})")
+            vprint(f"[+] Animations {ANIM_KEEP_PREFIXES}: {res[0]} keyframes kept, {res[1]} removed ({obj.name})")
 
 
 def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
@@ -745,7 +748,7 @@ def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
 
     if resolved_nif_path:
         if IMPORT_MODE == "npc" and _SKELETON_RE.search(clean_key):
-            print(f"[~] Squelette NPC: {resolved_nif_path}")
+            vprint(f"[~] NPC skeleton: {resolved_nif_path}")
         bpy.ops.object.select_all(action="DESELECT")
         objs_before = set(bpy.data.objects)
 
@@ -782,7 +785,7 @@ def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
                     bpy.data.objects.remove(obj, do_unlink=True)
                 imported_objs = [o for o in imported_objs if o not in placeholders]
                 if placeholders:
-                    print(f"[-] {len(placeholders)} placeholder(s) 'Tri *' supprimés de {base_name}")
+                    vprint(f"[-] {len(placeholders)} placeholder(s) 'Tri *' removed from {base_name}")
 
             # Beast races : 'Tri Tail 2' est un corps blanc générique qui double le vrai
             # corps, quel que soit le fichier d'où il vient (squelette, Skins.NIF...).
@@ -794,7 +797,7 @@ def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
                     bpy.data.objects.remove(obj, do_unlink=True)
                 imported_objs = [o for o in imported_objs if o not in ghosts]
                 if ghosts:
-                    print(f"[-] {len(ghosts)} mesh 'Tri Tail 2' supprimé(s) de {base_name}")
+                    vprint(f"[-] {len(ghosts)} mesh(es) 'Tri Tail 2' removed from {base_name}")
 
             if imported_objs:
                 for obj in imported_objs:
@@ -834,7 +837,7 @@ def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
             # garde que la dernière ligne utile.
             lines = [ln.strip() for ln in str(e).splitlines() if ln.strip()]
             reason = lines[-1] if lines else type(e).__name__
-            print(f"[-] Import error for '{resolved_nif_path}': {reason}")
+            vprint(f"[-] Import error for '{resolved_nif_path}': {reason}")
             # Supprimer les objets créés à moitié avant l'erreur
             for obj in [o for o in bpy.data.objects if o not in objs_before]:
                 bpy.data.objects.remove(obj, do_unlink=True)
@@ -844,11 +847,11 @@ def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
         tried = _tried + (resolved_nif_path,)
         alt = find_nif_file(mesh_relative_path, tried)
         if alt:
-            print(f"[~] Repli sur '{alt}'")
+            vprint(f"[~] Falling back to '{alt}'")
             return get_or_import_mesh(mesh_relative_path, tried, is_model)
         failed_meshes[clean_key] = f"{reason} ({resolved_nif_path})"
     else:
-        print(f"[-] Mesh file not found on disk: {mesh_relative_path}")
+        vprint(f"[-] Mesh file not found on disk: {mesh_relative_path}")
         failed_meshes[clean_key] = "file not found"
 
     return None
@@ -857,12 +860,12 @@ def get_or_import_mesh(mesh_relative_path, _tried=(), is_model=False):
 def report_failed_meshes():
     if not failed_meshes:
         return
-    print()
-    print("=" * 60)
-    print(f"[!] {len(failed_meshes)} mesh(es) skipped (references ignored):")
+    vprint()
+    vprint("=" * 60)
+    vprint(f"[!] {len(failed_meshes)} mesh(es) skipped (references ignored):")
     for key, reason in sorted(failed_meshes.items()):
-        print(f"    - {key}: {reason}")
-    print("=" * 60)
+        vprint(f"    - {key}: {reason}")
+    vprint("=" * 60)
 
 
 # ==========================================
@@ -1023,26 +1026,26 @@ def _find_node_anywhere(node_name, arm, cell_collection):
 def _dump_held_nodes(rec_info, arm, cell_collection):
     """Diagnostic : où sont 'Shield Bone' / 'Weapon Bone' dans les squelettes ?"""
     keys = ("shield", "weapon", "hand")
-    print("[DBGNODE] --- objets du NPC")
+    vprint("[DBGNODE] --- NPC objects")
     for o in cell_collection.objects:
         if any(k in o.name.lower() for k in keys):
-            print(f"[DBGNODE]   {o.type:6s} '{o.name}' parent="
+            vprint(f"[DBGNODE]   {o.type:6s} '{o.name}' parent="
                   f"{o.parent.name if o.parent else None} ptype={o.parent_type} "
-                  f"os='{o.parent_bone}'")
-    print("[DBGNODE] --- os de l'armature canonique")
-    print("[DBGNODE]  ", sorted(b.name for b in arm.data.bones
+                  f"bone='{o.parent_bone}'")
+    vprint("[DBGNODE] --- canonical armature bones")
+    vprint("[DBGNODE]  ", sorted(b.name for b in arm.data.bones
                                if any(k in b.name.lower() for k in keys)))
     imported = get_or_import_mesh(
         get_default_skeleton(rec_info.get("race"),
                              "FEMALE" in (rec_info.get("npc_flags") or "")),
         is_model=True)
     if imported:
-        print("[DBGNODE] --- squelette vanilla")
+        vprint("[DBGNODE] --- vanilla skeleton")
         for t in imported[0]:
             if any(k in t.name.lower() for k in keys):
-                print(f"[DBGNODE]   {t.type:6s} '{t.name}' parent="
+                vprint(f"[DBGNODE]   {t.type:6s} '{t.name}' parent="
                       f"{t.parent.name if t.parent else None} ptype={t.parent_type} "
-                      f"os='{t.parent_bone}'")
+                      f"bone='{t.parent_bone}'")
 
 
 def _vanilla_bone_rel(rec_info, node_name, bones):
@@ -1070,9 +1073,9 @@ def _fallback_attach_node(node_name, arm, attach_nodes, cell_collection, rec_inf
     found = _find_node_anywhere(node_name, arm, cell_collection)
     if found is not None:
         attach_nodes[low] = found
-        print(f"[~] Nœud '{node_name}' trouvé hors attache : {found.type} "
+        vprint(f"[~] Node '{node_name}' found outside attachment: {found.type} "
               f"'{found.name}' parent={found.parent.name if found.parent else None} "
-              f"os='{found.parent_bone}'")
+              f"bone='{found.parent_bone}'")
         return found
     bones = arm.data.bones
     emp = bpy.data.objects.new(node_name + "_fb", None)
@@ -1088,11 +1091,11 @@ def _fallback_attach_node(node_name, arm, attach_nodes, cell_collection, rec_inf
         emp.parent_bone = pbn
         # enfant d'os Blender : origine à la queue de l'os parent
         emp.matrix_basis = Matrix.Translation((0.0, -bones[pbn].length, 0.0)) @ rel
-        how = f"os vanilla '{node_name}' relatif à '{pbn}'"
+        how = f"vanilla bone '{node_name}' relative to '{pbn}'"
     elif ref is not None and ref[1] in bones:
         emp.parent_bone = ref[1]
         emp.matrix_basis = ref[0]
-        how = f"nœud vanilla (os '{ref[1]}')"
+        how = f"vanilla node (bone '{ref[1]}')"
     else:
         _dump_held_nodes(rec_info, arm, cell_collection)
         bone = bones.get(node_name) or next(
@@ -1101,13 +1104,13 @@ def _fallback_attach_node(node_name, arm, attach_nodes, cell_collection, rec_inf
             bpy.data.objects.remove(emp, do_unlink=True)
             cands = sorted(b.name for b in bones
                            if any(k in b.name.lower() for k in ("hand", "weapon", "shield")))
-            print(f"[-] Nœud '{node_name}' : aucun os utilisable. Os candidats : {cands}")
+            vprint(f"[-] Node '{node_name}': no usable bone. Candidate bones: {cands}")
             return None
         emp.parent_bone = bone.name
         emp.matrix_basis = Matrix.Translation((0.0, -bone.length, 0.0))  # tête de l'os
         how = f"os '{bone.name}' (orientation approximative)"
     attach_nodes[low] = emp
-    print(f"[~] Nœud '{node_name}' absent : créé via {how}")
+    vprint(f"[~] Node '{node_name}' missing: created via {how}")
     return emp
 
 
@@ -1131,7 +1134,7 @@ def apply_held_node_delta(node, node_name):
         node.delta_rotation_euler = eul
     else:
         node.delta_rotation_euler = Euler(eul[:], node.rotation_mode)
-    print(f"[+] Delta rotation '{node_name}' : X {deg[0]:g} Y {deg[1]:g} Z {deg[2]:g}")
+    vprint(f"[+] Delta rotation '{node_name}' : X {deg[0]:g} Y {deg[1]:g} Z {deg[2]:g}")
 
 
 def mirrored_copy(src, cell_collection):
@@ -1188,8 +1191,8 @@ def _rest_remap(obj, src_arm, dst_arm):
             worst = max(worst, (new - w).length)
             v.co = Mi @ new
     obj.data.update()
-    print(f"[~] Rebind au repos '{obj.name}' {src_arm.name}->{dst_arm.name}: "
-          f"{len(T)} os, deplacement max {worst:.3f} m")
+    vprint(f"[~] Rest-pose rebind '{obj.name}' {src_arm.name}->{dst_arm.name}: "
+          f"{len(T)} bones, max displacement {worst:.3f} m")
     return True
 
 
@@ -1229,14 +1232,14 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
             _hit = next((x for x in _paths if _key in os.path.basename(x)), None)
             if _hit:
                 am_fix = _fix
-                print(f"[~] Squelette '{_key}' détecté ({_hit}) : "
-                      f"+{_fix[0]} m en Z, rotation Z {_fix[1]}°")
+                vprint(f"[~] Skeleton '{_key}' detected ({_hit}): "
+                      f"+{_fix[0]} m in Z, Z rotation {_fix[1]}°")
                 break
         if am_fix is None:
             _am = [x for x in _paths if os.path.basename(x).startswith("am_")]
             if _am:
-                print(f"[AM] '{rec_info.get('name') or ref_id}' : modèle(s) AM {_am} "
-                      f"(aucun correctif dans AM_SKELETON_FIXES)")
+                vprint(f"[AM] '{rec_info.get('name') or ref_id}' : AM model(s) {_am} "
+                      f"(no fix in AM_SKELETON_FIXES)")
 
     any_imported = False
     created = 0
@@ -1270,7 +1273,7 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
         norm_path = mesh_path.replace("\\", "/").lower()
         has_armature = any(o.type == 'ARMATURE' for o in template_objs)
         if has_armature and norm_path in armature_paths:
-            print(f"[~] Entrée ignorée (squelette déjà traité): "
+            vprint(f"[~] Entry skipped (skeleton already processed): "
                   f"{mesh_path} [{slot_hint}]")
             continue
 
@@ -1380,9 +1383,9 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                 # (rotation de la cell) utilise la convention de signes.
                 if t_root_local.to_3x3().to_euler().to_quaternion().angle > 1e-3:
                     e = t_root_local.to_euler()
-                    print(f"[~] Racine NIF '{t_root.name}' tournee "
+                    vprint(f"[~] NIF root '{t_root.name}' rotated "
                           f"({math.degrees(e.x):.0f}, {math.degrees(e.y):.0f}, "
-                          f"{math.degrees(e.z):.0f})° : conservee telle quelle")
+                          f"{math.degrees(e.z):.0f})° : kept as is")
                 new_root.matrix_world = mat_ref @ t_root_local
                 continue
             nif_euler = t_root_local.to_euler(EULER_ORDER)
@@ -1420,7 +1423,7 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                     new_obj.parent_bone = ''
                     new_obj.matrix_parent_inverse = Matrix.Identity(4)
                     new_obj.matrix_basis = Matrix.Translation(head) @ mb
-                    print(f"[~] Silt Strider : '{new_obj.name}' reparenté à l'armature (head os = {tuple(round(x, 2) for x in head)})")
+                    vprint(f"[~] Silt Strider : '{new_obj.name}' reparented to the armature (head bone = {tuple(round(x, 2) for x in head)})")
                     continue
                 t_root = _root_of(t_obj)
                 if 'matrix_world' not in snapshot[t_obj] or t_root not in copied_map:
@@ -1429,17 +1432,17 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                 new_obj.matrix_world = (copied_map[t_root].matrix_world
                                         @ snapshot[t_root]['matrix_world'].inverted()
                                         @ snapshot[t_obj]['matrix_world'])
-                print(f"[~] Objet parenté à un os recalé : '{new_obj.name}' "
-                      f"(os '{new_obj.parent_bone}')")
+                vprint(f"[~] Object parented to a re-seated bone: '{new_obj.name}' "
+                      f"(bone '{new_obj.parent_bone}')")
 
         if DEBUG_MESH and DEBUG_MESH in mesh_path.lower():
             bpy.context.view_layer.update()
-            print(f"[DBG] {mesh_path} (ref rot MW = {tuple(round(math.degrees(r), 1) for r in rotation)})")
+            vprint(f"[DBG] {mesh_path} (ref rot MW = {tuple(round(math.degrees(r), 1) for r in rotation)})")
             for o in copied_map.values():
                 e = o.matrix_world.to_euler()
                 extra = f" pose={o.data.pose_position}" if o.type == 'ARMATURE' else ""
                 extra += f" ptype={o.parent_type}" + (f"/{o.parent_bone}" if o.parent_bone else "")
-                print(f"[DBG]   {o.type:8s} '{o.name}' parent={o.parent.name if o.parent else None} "
+                vprint(f"[DBG]   {o.type:8s} '{o.name}' parent={o.parent.name if o.parent else None} "
                       f"rot=({math.degrees(e.x):.0f},{math.degrees(e.y):.0f},{math.degrees(e.z):.0f}) "
                       f"dims={tuple(round(d, 2) for d in o.dimensions)}{extra}")
 
@@ -1531,8 +1534,8 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                           and re.sub(r"\.\d+$", "", o.name).lower() in ATTACH_NODE_NAMES]
             if mesh_nodes:
                 ref_bases = _default_attach_bases(rec_info)
-                print(f"[~] {len(mesh_nodes)} nœud(s) d'attache MESH convertis "
-                      f"({'rotation du squelette par défaut' if ref_bases else 'sans référence'})")
+                vprint(f"[~] {len(mesh_nodes)} attachment MESH node(s) converted "
+                      f"({'default skeleton rotation' if ref_bases else 'no reference'})")
                 for ob in mesh_nodes:
                     _attach_mesh_to_empty(ob, copied_map, ref_bases)
 
@@ -1546,11 +1549,11 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
             for base, n in sorted(attach_nodes.items()):
                 r = ref.get(base)
                 if r is None:
-                    print(f"[ATT] {base:18s} pas de réf vanilla"); continue
+                    vprint(f"[ATT] {base:18s} no vanilla ref"); continue
                 ml = n.matrix_parent_inverse @ n.matrix_basis
                 dl = (ml.translation - r.translation).length
                 da = math.degrees(ml.to_quaternion().rotation_difference(r.to_quaternion()).angle)
-                print(f"[ATT] {base:18s} {n.type:5s} bone={n.parent_bone:14s} dLoc={dl:.3f} dRot={da:.0f}°")
+                vprint(f"[ATT] {base:18s} {n.type:5s} bone={n.parent_bone:14s} dLoc={dl:.3f} dRot={da:.0f}°")
 
         # Les mains sont désormais skinnées à 100 % sur les os 'Bip01
         # Hand.L/R' canoniques (voir plus haut) : elles suivent l'animation
@@ -1660,7 +1663,7 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                         node = _fallback_attach_node(node_name, canonical, attach_nodes,
                                                     cell_collection, rec_info)
                     if node is None:
-                        print(f"[-] Nœud d'attache '{node_name}' introuvable "
+                        vprint(f"[-] Attachment node '{node_name}' not found "
                               f"(slot {slot_hint})")
                         continue
                     apply_held_node_delta(node, node_name)
@@ -1684,7 +1687,7 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                         ob.parent_bone = ''
                         ob.matrix_parent_inverse = Matrix.Identity(4)
                         ob.matrix_basis = (rl @ local) if held_yaw else local
-                    print(f"[+] Attache {len(objs)} pièce(s) -> "
+                    vprint(f"[+] Attached {len(objs)} piece(s) -> "
                           f"'{node_name}' ({slot_hint})")
 
             # Nettoyage des empties devenus inutiles (racines/coquilles des
@@ -1748,8 +1751,8 @@ def place_reference(rec_info, ref, origin_offset, cell_collection):
                 bpy.data.objects.remove(ob, do_unlink=True)
                 removed += 1
         if removed:
-            print(f"[+] Peau remplacée par vêtement : {removed} partie(s) "
-                  f"supprimée(s) pour {sorted(covered)}")
+            vprint(f"[+] Skin replaced by clothing: {removed} part(s) "
+                  f"removed for {sorted(covered)}")
 
     if not any_imported:
         # Placeholder if the NIF file is not found
@@ -1805,7 +1808,7 @@ def build_landscape_maps(data):
             landscape_map[(int(g[0]), int(g[1]))] = rec
         elif t == "LandscapeTexture":
             ltex_map[int(rec.get("index", 0))] = rec.get("file_name", "")
-    print(f"[+] Landscape: {len(landscape_map)} | LTEX: {len(ltex_map)}")
+    vprint(f"[+] Landscape: {len(landscape_map)} | LTEX: {len(ltex_map)}")
 
 
 LAND_TEX_CHUNKED = True
@@ -1830,7 +1833,7 @@ def _zstd_decompress(raw):
         pass
     exe = shutil.which("zstd")
     if not exe:
-        raise RuntimeError("zstd introuvable : `sudo pacman -S zstd` ou `pip install zstandard`")
+        raise RuntimeError("zstd not found: `sudo pacman -S zstd` or `pip install zstandard`")
     return subprocess.run([exe, "-d", "-c", "-q"], input=raw,
                           stdout=subprocess.PIPE, check=True).stdout
 
@@ -1869,7 +1872,7 @@ def decode_heights(land):
     offset = float(vh.get("offset", 0.0)) if isinstance(vh, dict) else 0.0
     nums = _numbers(vh, "b")
     if not nums or len(nums) < N * N:
-        print(f"[!] vertex_heights inattendu ({0 if not nums else len(nums)} valeurs), terrain plat")
+        vprint(f"[!] unexpected vertex_heights ({0 if not nums else len(nums)} values), flat terrain")
         return flat
     row_start = offset
     for y in range(N):
@@ -1900,7 +1903,7 @@ def load_land_image(file_name):
                 except Exception:
                     pass
                 return img
-    print(f"[-] Land texture not found: {file_name}")
+    vprint(f"[-] Land texture not found: {file_name}")
     return None
 
 
@@ -1972,7 +1975,7 @@ def _layer_pixels(vtex):
             tmp.pixels.foreach_get(buf)
             px = buf.reshape(T, T, 4)
         except Exception as e:
-            print(f"[-] Land texture unreadable '{file_name}': {e}")
+            vprint(f"[-] Land texture unreadable '{file_name}': {e}")
         finally:
             if tmp:
                 bpy.data.images.remove(tmp)
@@ -2145,7 +2148,7 @@ def build_exterior_ground(cell, origin_offset, collection):
     if land:
         build_terrain(land, origin_offset, collection)
     else:
-        print(f"[~] No LAND record for cell ({gx},{gy})")
+        vprint(f"[~] No LAND record for cell ({gx},{gy})")
     wh = cell.get("water_height")
     build_water(gx, gy, float(wh) if wh is not None else 0.0, origin_offset, collection)
 
@@ -2153,29 +2156,28 @@ def build_exterior_ground(cell, origin_offset, collection):
 def rebuild_npc_by_name(record_map, seen_cells):
     """Mode npcs + --npc : importe toutes les occurrences du NPC cherché,
     centrées sur la première trouvaille."""
-    print()
-    print("=" * 60)
-    print(f"[+] Searching NPC/Creature: '{TARGET_NPC_NAME}'")
-    print("=" * 60)
+    vprint()
+    vprint("=" * 60)
+    vprint(f"[+] Searching NPC/Creature: '{TARGET_NPC_NAME}'")
+    vprint("=" * 60)
 
     hits = find_npc_references(record_map, seen_cells)
     if not hits:
-        print(f"[-] No NPC/Creature found matching '{TARGET_NPC_NAME}'")
+        eprint(f"[-] No NPC/Creature found matching '{TARGET_NPC_NAME}'")
         return 0, 0
 
     # Plusieurs occurrences (cells différentes) : laisser l'utilisateur
     # choisir laquelle importer. Entrée vide = la première.
     if len(hits) > 1:
-        print()
-        print(f"[?] {len(hits)} occurrences trouvées :")
+        eprint()
+        eprint(f"[?] {len(hits)} matches found:")
         for i, (ref, rec_info, cell_label) in enumerate(hits, 1):
             label = rec_info.get("name") or rec_info.get("id")
             tr = [round(v, 1) for v in ref.get("translation", [0, 0, 0])]
-            print(f"    {i}) '{label}' in cell: {cell_label}  pos={tr}")
+            eprint(f"    {i}) '{label}' in cell: {cell_label}  pos={tr}")
         try:
-            choice = input(
-                "Numéro de l'occurrence à importer "
-                "(entrée vide = 1) : ").strip()
+            eprint("Match number to import (empty = 1): ", end="")
+            choice = input().strip()
         except EOFError:
             choice = "1"
         try:
@@ -2183,12 +2185,12 @@ def rebuild_npc_by_name(record_map, seen_cells):
             if 1 <= idx <= len(hits):
                 hits = [hits[idx - 1]]
             else:
-                print(f"[!] Hors range 1-{len(hits)}, "
-                      f"première occurrence retenue.")
+                eprint(f"[!] Out of range 1-{len(hits)}, "
+                      f"keeping the first match.")
                 hits = hits[:1]
         except ValueError:
-            print(f"[!] Entrée invalide ('{choice}'), "
-                  f"première occurrence retenue.")
+            eprint(f"[!] Invalid input ('{choice}'), "
+                  f"keeping the first match.")
             hits = hits[:1]
 
     collection_name = f"MW_{TARGET_NPC_NAME}"
@@ -2203,19 +2205,19 @@ def rebuild_npc_by_name(record_map, seen_cells):
 
     for ref, rec_info, cell_label in hits:
         label = rec_info.get("name") or rec_info.get("id")
-        print(f"[+] Found '{label}' in cell: {cell_label}")
+        vprint(f"[+] Found '{label}' in cell: {cell_label}")
         object_count += place_reference(rec_info, ref, origin_offset, npc_collection)
 
     bpy.context.view_layer.update()
 
-    print()
-    print("=" * 60)
-    print("[+] RECONSTRUCTION COMPLETE")
-    print("=" * 60)
-    print(f"[+] Hits:    {len(hits)}")
-    print(f"[+] Objects: {object_count}")
-    print(f"[+] Cached meshes: {len(imported_mesh_cache)}")
-    print("=" * 60)
+    vprint()
+    vprint("=" * 60)
+    vprint("[+] RECONSTRUCTION COMPLETE")
+    vprint("=" * 60)
+    vprint(f"[+] Hits:    {len(hits)}")
+    vprint(f"[+] Objects: {object_count}")
+    vprint(f"[+] Cached meshes: {len(imported_mesh_cache)}")
+    vprint("=" * 60)
 
     return len(hits), object_count
 
@@ -2248,7 +2250,7 @@ def rebuild_cells_in_blender():
              and gy1 <= cell_grid(c)[1] <= gy2),
             key=lambda c: (cell_grid(c)[1], cell_grid(c)[0]))
         expected = (gx2 - gx1 + 1) * (gy2 - gy1 + 1)
-        print(f"[+] Exterior grid {TARGET_GRID}: {len(cells_to_process)}/{expected} cell(s) found")
+        vprint(f"[+] Exterior grid {TARGET_GRID}: {len(cells_to_process)}/{expected} cell(s) found")
         # Origine commune a toutes les cells : centre du rectangle demande
         # (le niveau de la mer reste a z=0, les cells restent alignees)
         grid_origin = Vector((
@@ -2275,14 +2277,16 @@ def rebuild_cells_in_blender():
         rebuild_full(cells_to_process, grid_origin, record_map, seen_cells)
         return
 
+    cells_bar = Progress(len(cells_to_process), "Cells", disable=len(cells_to_process) <= 1)
+    cells_bar.__enter__()
     for cell in cells_to_process:
         cell_label = cell_display_label(cell)
         collection_name = f"MW_{cell_label}"
 
-        print()
-        print("=" * 60)
-        print(f"[+] Processing cell: {cell_label}")
-        print("=" * 60)
+        vprint()
+        vprint("=" * 60)
+        vprint(f"[+] Processing cell: {cell_label}")
+        vprint("=" * 60)
 
         if collection_name in bpy.data.collections:
             cell_collection = bpy.data.collections[collection_name]
@@ -2311,42 +2315,45 @@ def rebuild_cells_in_blender():
                 origin_offset = Vector(ref.get("translation", [0.0, 0.0, 0.0])) * SCALE_FACTOR
                 break
 
-        print(f"[+] References in cell: {len(references)}")
-        print(f"[+] Origin offset: {origin_offset[:]}" if origin_offset.length > 0 else "[+] No offset (already centered)")
+        vprint(f"[+] References in cell: {len(references)}")
+        vprint(f"[+] Origin offset: {origin_offset[:]}" if origin_offset.length > 0 else "[+] No offset (already centered)")
 
         if IMPORT_MODE != "npc" and not cell_is_interior(cell):
             build_exterior_ground(cell, origin_offset, cell_collection)
 
         if IMPORT_MODE == "npc":
             # Mode npc : seuls les NPCs/creatures (should_import filtre deja)
+            npc_todo = []
             for ref in references:
                 if is_ref_skipped(ref):
                     continue
-
                 rec_info = record_map.get((ref.get("id") or "").lower(), {})
-
-                if not should_import(rec_info.get("type")):
-                    continue
-
-                object_count += place_reference(rec_info, ref, origin_offset, cell_collection)
+                if should_import(rec_info.get("type")):
+                    npc_todo.append((ref, rec_info))
+            with Progress(len(npc_todo), "NPCs") as bar:
+                for ref, rec_info in npc_todo:
+                    object_count += place_reference(rec_info, ref, origin_offset, cell_collection)
+                    bar.update()
         else:
             # Interior / exterior : decor, puis NPCs/creatures si --npcs 1
             object_count += import_cell_refs(cell, record_map, origin_offset,
                                              cell_collection, WITH_NPCS)
 
-        print(f"[+] Finished cell: {cell_label}")
+        vprint(f"[+] Finished cell: {cell_label}")
+        cells_bar.update()
+    cells_bar.close()
 
     # Force le rafraîchissement complet de la scène Blender
     bpy.context.view_layer.update()
 
-    print()
-    print("=" * 60)
-    print("[+] RECONSTRUCTION COMPLETE")
-    print("=" * 60)
-    print(f"[+] Cells:   {cell_count}")
-    print(f"[+] Objects: {object_count}")
-    print(f"[+] Cached meshes: {len(imported_mesh_cache)}")
-    print("=" * 60)
+    vprint()
+    vprint("=" * 60)
+    vprint("[+] RECONSTRUCTION COMPLETE")
+    vprint("=" * 60)
+    vprint(f"[+] Cells:   {cell_count}")
+    vprint(f"[+] Objects: {object_count}")
+    vprint(f"[+] Cached meshes: {len(imported_mesh_cache)}")
+    vprint("=" * 60)
 
 # ==========================================
 # MODE FULL : exterieur + interieurs (via les portes) + NPCs
@@ -2417,11 +2424,15 @@ def import_cell_refs(cell, record_map, origin_offset, collection, with_npcs=True
     count = 0
 
     _set_import_mode("cell")
+    static_refs = []
     for ref in refs:
         rec_info = record_map.get((ref.get("id") or "").lower(), {})
-        if not should_import(rec_info.get("type")):
-            continue
-        count += place_reference(rec_info, ref, origin_offset, collection)
+        if should_import(rec_info.get("type")):
+            static_refs.append((ref, rec_info))
+    with Progress(len(static_refs), "Decor") as bar:
+        for ref, rec_info in static_refs:
+            count += place_reference(rec_info, ref, origin_offset, collection)
+            bar.update()
 
     if not with_npcs:
         return count
@@ -2443,7 +2454,7 @@ def import_cell_refs(cell, record_map, origin_offset, collection, with_npcs=True
         #    peau des NPCs precedents de la meme race.
         scratch = _scratch_collection()
         t_all = time.time()
-        with _IsolatedView(scratch):
+        with _IsolatedView(scratch), Progress(len(npc_refs), "NPCs") as bar:
             for i, (ref, rec_info) in enumerate(npc_refs, 1):
                 t0 = time.time()
                 count += place_reference(rec_info, ref, origin_offset, scratch)
@@ -2451,8 +2462,9 @@ def import_cell_refs(cell, record_map, origin_offset, collection, with_npcs=True
                     collection.objects.link(obj)
                     scratch.objects.unlink(obj)
                 label = rec_info.get("name") or rec_info.get("id")
-                print(f"    [NPC {i}/{len(npc_refs)}] {label}: {time.time() - t0:.1f}s", flush=True)
-        print(f"    [NPC] {len(npc_refs)} importe(s) en {time.time() - t_all:.1f}s", flush=True)
+                vprint(f"    [NPC {i}/{len(npc_refs)}] {label}: {time.time() - t0:.1f}s", flush=True)
+                bar.update()
+        vprint(f"    [NPC] {len(npc_refs)} imported in {time.time() - t_all:.1f}s", flush=True)
     finally:
         _set_import_mode("cell")
     return count
@@ -2504,13 +2516,13 @@ def reset_scene():
     NPC_RACE_SKINS_MISSING = False
 
     bpy.context.view_layer.update()
-    print(f"[+] Scene reset en {time.time() - t0:.1f}s", flush=True)
+    vprint(f"[+] Scene reset in {time.time() - t0:.1f}s", flush=True)
 
 
 def finalize_and_save(path):
     """Corrige les textures puis ecrit la scene courante dans `path` (.blend compresse)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    print(f"[+] Fixing textures + saving {path}")
+    vprint(f"[+] Fixing textures + saving {path}")
     fix_missing_textures()
     zero_material_emission()
     # Le mode REST n'etait necessaire que pour les calculs de bake : le restaurer,
@@ -2543,10 +2555,10 @@ def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
     export/manifest.json             portes : exterieur/interieur <-> interieur, positions
     export/files.txt                 liste des fichiers (sans extension) pour run.sh
     """
-    print()
-    print("=" * 60)
-    print("[+] FULL MODE : exterior + interiors + NPCs (un .blend par cell)")
-    print("=" * 60)
+    vprint()
+    vprint("=" * 60)
+    vprint("[+] FULL MODE: exterior + interiors + NPCs (one .blend per cell)")
+    vprint("=" * 60)
 
     # Sorties precedentes de ce dossier (gere par ce script) : on repart de zero
     shutil.rmtree(os.path.join(FULL_OUTDIR, "interiors"), ignore_errors=True)
@@ -2569,11 +2581,13 @@ def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
     # ---------- 1. Exterieur ----------
     queue = []   # (nom, porte, destination, 'exterior'|nom parent, position porte, profondeur)
     seen_doors = 0
+    ext_bar = Progress(len(cells_to_process), "Exterior", disable=len(cells_to_process) <= 1)
+    ext_bar.__enter__()
     for cell in cells_to_process:
         label = cell_display_label(cell)
         coll = bpy.data.collections.new(f"MW_{label}"[:60])
         bpy.context.scene.collection.children.link(coll)
-        print(f"[+] Exterior cell {label} ({len(cell.get('references') or [])} refs)")
+        vprint(f"[+] Exterior cell {label} ({len(cell.get('references') or [])} refs)")
         build_exterior_ground(cell, grid_origin, coll)
         object_count += import_cell_refs(cell, record_map, grid_origin, coll, FULL_WITH_NPCS)
 
@@ -2581,22 +2595,28 @@ def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
             seen_doors += 1
             p = Vector(ref.get("translation", [0.0, 0.0, 0.0])) * SCALE_FACTOR - grid_origin
             queue.append((name, ref, dest, "exterior", p, 1))
+        ext_bar.update()
+    ext_bar.close()
 
     finalize_and_save(os.path.join(FULL_OUTDIR, "exterior.blend"))
     produced.append("exterior")
     reset_scene()
 
-    print(f"[+] {seen_doors} porte(s) vers un interieur dans l'exterieur")
+    vprint(f"[+] {seen_doors} door(s) leading to an interior in the exterior")
     if seen_doors == 0:
-        print("[!] Aucune porte trouvee : verifie le champ 'destination' des references "
+        vprint("[!] No door found: check the 'destination' field of the references "
               "(jq '.[]|select(.type==\"Cell\")|.references[]|select(.destination)' output.json | head)")
 
     # ---------- 2. Interieurs (BFS) : un fichier chacun ----------
     manifest_interiors = {}            # nom en minuscules -> entree du manifest
     origins = {}                       # nom en minuscules -> origin_offset (Vector)
     used_stems = set()
+    int_bar = Progress(len(queue), "Interiors")
+    int_bar.__enter__()
     while queue:
         name, door_ref, dest, parent, door_pos, depth = queue.pop(0)
+        int_bar.total = int_bar.n + 1 + len(queue)   # file dynamique (portes interieur -> interieur)
+        int_bar.update()
         key = name.lower()
         arrival = Vector(dest.get("translation") or [0.0, 0.0, 0.0]) * SCALE_FACTOR
 
@@ -2619,13 +2639,13 @@ def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
         t0 = time.time()
         coll = bpy.data.collections.new(f"MW_{name}"[:60])
         bpy.context.scene.collection.children.link(coll)
-        print(f"[+] Interior '{name}' (depth {depth}, {len(cell.get('references') or [])} refs) -> interiors/{stem}.blend")
+        vprint(f"[+] Interior '{name}' (depth {depth}, {len(cell.get('references') or [])} refs) -> interiors/{stem}.blend")
         object_count += import_cell_refs(cell, record_map, origin_offset, coll, FULL_WITH_NPCS)
 
         finalize_and_save(os.path.join(FULL_OUTDIR, "interiors", stem + ".blend"))
         produced.append(f"interiors/{stem}")
         reset_scene()
-        print(f"    [+] '{name}' termine en {time.time() - t0:.1f}s ({len(produced) - 1} interieur(s) faits)", flush=True)
+        vprint(f"    [+] '{name}' done in {time.time() - t0:.1f}s ({len(produced) - 1} interior(s) completed)", flush=True)
 
         manifest_interiors[key] = {
             "name": name,
@@ -2646,12 +2666,14 @@ def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
                 p = Vector(ref.get("translation", [0.0, 0.0, 0.0])) * SCALE_FACTOR - origin_offset
                 queue.append((nxt, ref, nxt_dest, name, p, depth + 1))
 
+    int_bar.close()
+
     # ---------- 3. Manifest + liste de fichiers ----------
     manifest = {
         "scale": SCALE_FACTOR,
-        "notes": "Positions en metres, repere Blender (Z haut), dans le fichier indique. "
-                 "Chaque interieur a son origine sur le point d'arrivee de sa premiere porte ; "
-                 "'arrival_position' donne le point d'arrivee de chaque porte dans le fichier de l'interieur.",
+        "notes": "Positions in meters, Blender frame (Z up), in the indicated file. "
+                 "Each interior has its origin at the arrival point of its first door; "
+                 "'arrival_position' gives the arrival point of each door in the interior's file.",
         "exterior": {
             "file": "exterior",
             "grid": list(TARGET_GRID),
@@ -2664,16 +2686,16 @@ def rebuild_full(cells_to_process, grid_origin, record_map, seen_cells):
     with open(os.path.join(FULL_OUTDIR, "files.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(produced) + "\n")
 
-    print()
-    print("=" * 60)
-    print("[+] FULL RECONSTRUCTION COMPLETE")
-    print("=" * 60)
-    print(f"[+] Exterior cells: {len(cells_to_process)}")
-    print(f"[+] Interiors:      {len(manifest_interiors)}")
-    print(f"[+] Objects:        {object_count}")
-    print(f"[+] Files:          {len(produced)} .blend dans {FULL_OUTDIR}")
-    print(f"[+] Time:           {time.time() - t_start:.0f}s")
-    print("=" * 60)
+    vprint()
+    vprint("=" * 60)
+    vprint("[+] FULL RECONSTRUCTION COMPLETE")
+    vprint("=" * 60)
+    vprint(f"[+] Exterior cells: {len(cells_to_process)}")
+    vprint(f"[+] Interiors:      {len(manifest_interiors)}")
+    vprint(f"[+] Objects:        {object_count}")
+    vprint(f"[+] Files:          {len(produced)} .blend file(s) in {FULL_OUTDIR}")
+    vprint(f"[+] Time:           {time.time() - t_start:.0f}s")
+    vprint("=" * 60)
 
 
 # ==========================================
@@ -2721,7 +2743,7 @@ def zero_material_emission():
     image : intensite a 0)."""
     seen = set()
     count = sum(_zero_emission_tree(m.node_tree, seen) for m in bpy.data.materials)
-    print(f"[+] Emission des materiaux mise a 0 ({count} entree(s))")
+    vprint(f"[+] Material emission set to 0 ({count} entry/entries)")
 
 
 # ==========================================
@@ -2750,7 +2772,10 @@ def fix_missing_textures():
                         _TEX_INDEX[key] = os.path.join(root, f)
     tex_index = _TEX_INDEX
 
-    for img in bpy.data.images:
+    tex_bar = Progress(len(bpy.data.images), "Textures", disable=not len(bpy.data.images))
+    tex_bar.__enter__()
+    for img in list(bpy.data.images):
+        tex_bar.update()
         raw_path = img.filepath.replace("\\", "/")
 
         if not raw_path or os.path.exists(bpy.path.abspath(img.filepath)):
@@ -2783,24 +2808,25 @@ def fix_missing_textures():
                 if not img.packed_file:
                     img.pack()
             except Exception as e:
-                print(f"[-] Failed to reload texture '{found_path}': {e}")
+                vprint(f"[-] Failed to reload texture '{found_path}': {e}")
                 continue
             rebound_count += 1
         else:
-            print(f"[-] Missing texture file: {filename}")
+            vprint(f"[-] Missing texture file: {filename}")
 
-    print(f"[+] Rebound {rebound_count} missing texture paths.")
+    tex_bar.close()
+    vprint(f"[+] Rebound {rebound_count} missing texture paths.")
 
 
 # ==========================================
 # EXECUTION PIPELINE
 # ==========================================
 
-print()
-print("=" * 60)
-print("MORROWIND WORLD RECONSTRUCTION")
-print("=" * 60)
-print()
+vprint()
+vprint("=" * 60)
+vprint("MORROWIND WORLD RECONSTRUCTION")
+vprint("=" * 60)
+vprint()
 
 # Vider la scène par défaut (cube, caméra, lumière)
 for obj in list(bpy.data.objects):
@@ -2810,13 +2836,13 @@ rebuild_cells_in_blender()
 report_failed_meshes()
 
 if not FULL_MODE:   # en mode full, chaque .blend est ecrit (textures corrigees) par rebuild_full
-    print()
-    print("[+] Fixing missing textures...")
+    vprint()
+    vprint("[+] Fixing missing textures...")
     fix_missing_textures()
     zero_material_emission()
 
-    print()
-    print("[+] Saving Blender file...")
+    vprint()
+    vprint("[+] Saving Blender file...")
 
     # Le mode REST n'était nécessaire que pour les calculs de bake : le
     # restaurer, sinon l'armature reste évaluée au repos (T-Pose figée).
@@ -2826,7 +2852,7 @@ if not FULL_MODE:   # en mode full, chaque .blend est ecrit (textures corrigees)
 
     bpy.ops.wm.save_as_mainfile(filepath="morrowind.blend")
 
-print()
-print("=" * 60)
-print("[+] DONE")
-print("=" * 60)
+vprint()
+vprint("=" * 60)
+vprint("[+] DONE")
+vprint("=" * 60)

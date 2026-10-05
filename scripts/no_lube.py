@@ -2,6 +2,9 @@ import os
 import sys
 import bpy
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mwlog import vprint, eprint, Progress
+
 # Load the .blend file saved by the previous script
 blend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "morrowind.blend")
 for i, arg in enumerate(sys.argv):
@@ -11,9 +14,13 @@ for i, arg in enumerate(sys.argv):
 
 if os.path.exists(blend_path):
     bpy.ops.wm.open_mainfile(filepath=blend_path)
-    print(f"[+] Loaded: {blend_path}")
+    vprint(f"[+] Loaded: {blend_path}")
 
-for mat in bpy.data.materials:
+_mats = list(bpy.data.materials)
+_bar = Progress(len(_mats), "Materials", disable=not _mats)
+_bar.__enter__()
+for mat in _mats:
+    _bar.update()
     if mat.use_nodes and mat.node_tree:
         for node in mat.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
@@ -26,5 +33,7 @@ for mat in bpy.data.materials:
                 elif 'Specular IOR Level' in node.inputs:
                     node.inputs['Specular IOR Level'].default_value = 0.0
 
+_bar.close()
+
 bpy.ops.wm.save_as_mainfile(filepath=blend_path, compress=True)
-print(f"[+] Saved: {blend_path}")
+vprint(f"[+] Saved: {blend_path}")

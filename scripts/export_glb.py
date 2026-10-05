@@ -3,6 +3,9 @@ import sys
 import bpy
 from bpy_extras import anim_utils
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mwlog import vprint, eprint, Progress
+
 
 def get_arg(name, default=None):
     """Recupere la valeur d'un argument --name dans sys.argv (apres --)."""
@@ -24,7 +27,7 @@ for i, arg in enumerate(sys.argv):
 
 if os.path.exists(blend_path):
     bpy.ops.wm.open_mainfile(filepath=blend_path)
-    print(f"[+] Loaded: {blend_path}")
+    vprint(f"[+] Loaded: {blend_path}")
 
 # Parse --output from sys.argv
 output_path = get_arg("output", "morrowind.glb")
@@ -40,7 +43,7 @@ KEEP_PREFIXES = (
     else [p.strip().lower() for p in ANIMS_ARG.split(",") if p.strip()]
 )
 
-print(f"[+] Exporting GLB to: {output_path}")
+vprint(f"[+] Exporting GLB to: {output_path}")
 
 
 # ==========================================
@@ -98,7 +101,11 @@ def split_marker_actions():
         ad.action = None
 
         created = []
-        for clip_name, (start, stop) in sorted(clips.items()):
+        _clips = sorted(clips.items())
+        _cbar = Progress(len(_clips), f"Animations {ob.name}", disable=not _clips)
+        _cbar.__enter__()
+        for clip_name, (start, stop) in _clips:
+            _cbar.update()
             if start is None or stop is None or stop <= start:
                 continue
             if KEEP_PREFIXES and not any(clip_name.lower().startswith(p) for p in KEEP_PREFIXES):
@@ -140,7 +147,8 @@ def split_marker_actions():
             strip.action_slot = slot
             created.append(clip_name)
 
-        print(f"[+] {ob.name}: {len(created)} animations découpées: {created}")
+        _cbar.close()
+        vprint(f"[+] {ob.name}: {len(created)} animations split: {created}")
 
 
 def clear_material_animations():
@@ -152,12 +160,17 @@ def clear_material_animations():
             nt.animation_data_clear()
             removed += 1
     if removed:
-        print(f"[+] Cleaned {removed} material node tree actions")
+        vprint(f"[+] Cleaned {removed} material node tree actions")
 
 
+_steps = Progress(4, "Export GLB")
+_steps.__enter__()
+_steps.update()           # .blend charge
 split_marker_actions()
+_steps.update()           # animations decoupees
 clear_material_animations()
 bpy.data.orphans_purge()
+_steps.update()           # nettoyage
 
 # Export only visible objects
 bpy.ops.export_scene.gltf(
@@ -172,4 +185,6 @@ bpy.ops.export_scene.gltf(
     export_force_sampling=False,
 )
 
-print(f"[+] GLB exported successfully: {output_path}")
+_steps.update()           # export ecrit
+_steps.close()
+vprint(f"[+] GLB exported successfully: {output_path}")
