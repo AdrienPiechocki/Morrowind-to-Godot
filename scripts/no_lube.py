@@ -4,6 +4,7 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mwlog import vprint, eprint, Progress
+from mwcompat import has_nodes
 
 # Load the .blend file saved by the previous script
 blend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "morrowind.blend")
@@ -21,7 +22,7 @@ _bar = Progress(len(_mats), "Materials", disable=not _mats)
 _bar.__enter__()
 for mat in _mats:
     _bar.update()
-    if mat.use_nodes and mat.node_tree:
+    if has_nodes(mat):
         for node in mat.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
                 # Increase roughness (0.0 = mirror/wet, 1.0 = fully matte)

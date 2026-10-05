@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import bpy
 from bpy_extras import anim_utils
 
@@ -37,6 +38,8 @@ ANIMS_ARG = get_arg(
     "anims",
     "all",
 )
+# --anims none : no animation at all (fastest export, useful to find out what is slow)
+EXPORT_ANIMATIONS = ANIMS_ARG.strip().lower() != "none"
 KEEP_PREFIXES = (
     None
     if ANIMS_ARG.strip().lower() == "all"
@@ -163,14 +166,22 @@ def clear_material_animations():
         vprint(f"[+] Cleaned {removed} material node tree actions")
 
 
-_steps = Progress(4, "Export GLB")
+_steps = Progress(4, "Export GLB", eta=False)   # the export itself dominates: an ETA would be meaningless
 _steps.__enter__()
 _steps.update()           # .blend charge
-split_marker_actions()
+if EXPORT_ANIMATIONS:
+    split_marker_actions()
 _steps.update()           # animations decoupees
 clear_material_animations()
 bpy.data.orphans_purge()
 _steps.update()           # nettoyage
+
+# The glTF export is ONE long blocking call (minutes on big exterior scenes: thousands of
+# objects, ~2000 materials, textures re-encoded to PNG). The bar can't advance inside it,
+# so a heartbeat keeps the elapsed time ticking: if it counts, the export is alive.
+_steps.set_label("Writing GLB")
+_steps.start_heartbeat()
+_t_export = time.time()
 
 # Export only visible objects
 bpy.ops.export_scene.gltf(
@@ -178,7 +189,7 @@ bpy.ops.export_scene.gltf(
     export_format='GLB',
     use_visible=True,
     export_apply=True,
-    export_animations=True,
+    export_animations=EXPORT_ANIMATIONS,
     export_animation_mode='NLA_TRACKS',
     export_optimize_animation_size=True,
     export_optimize_animation_keep_anim_armature=False,
@@ -187,4 +198,4 @@ bpy.ops.export_scene.gltf(
 
 _steps.update()           # export ecrit
 _steps.close()
-vprint(f"[+] GLB exported successfully: {output_path}")
+vprint(f"[+] GLB exported successfully in {time.time() - _t_export:.0f}s: {output_path}")

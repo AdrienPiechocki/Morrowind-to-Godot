@@ -16,6 +16,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mwlog import vprint, eprint, Progress, VERBOSE
+from mwcompat import ensure_nodes
 
 # ==========================================
 # Parse CLI arguments (after Blender's --)
@@ -1914,7 +1915,7 @@ def get_terrain_material(vtex):
     file_name = "_land_default.dds" if vtex == 0 else ltex_map.get(vtex - 1, "")
     stem = os.path.splitext(os.path.basename(file_name))[0] or f"idx{vtex}"
     mat = bpy.data.materials.new(f"LAND_{stem}")
-    mat.use_nodes = True
+    ensure_nodes(mat)
     nt = mat.node_tree
     bsdf = nt.nodes.get("Principled BSDF")
     bsdf.inputs["Roughness"].default_value = 1.0
@@ -2037,7 +2038,7 @@ def bake_terrain_image(ti, gx, gy):
 
 def make_baked_material(img, gx, gy):
     mat = bpy.data.materials.new(f"LAND_{gx}_{gy}")
-    mat.use_nodes = True
+    ensure_nodes(mat)
     nt = mat.node_tree
     bsdf = nt.nodes.get("Principled BSDF")
     bsdf.inputs["Roughness"].default_value = 1.0
@@ -2113,7 +2114,7 @@ def get_water_material():
     if water_mat:
         return water_mat
     m = bpy.data.materials.new("Water")
-    m.use_nodes = True
+    ensure_nodes(m)
     b = m.node_tree.nodes.get("Principled BSDF")
     b.inputs["Base Color"].default_value = (0.025, 0.095, 0.130, 1.0)
     b.inputs["Alpha"].default_value = 0.15

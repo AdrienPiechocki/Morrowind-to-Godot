@@ -516,7 +516,26 @@ fi
 # code 0 et la suite du pipeline traite un morrowind.blend périmé).
 bl --background --python-exit-code 1 --python scripts/generate_blend.py -- "${BLENDER_ARGS[@]}"
 
-# Post-processing of one .blend (scripts), then GLB export (script 7).
+# Post-processing scripts, in this order:
+#   tga_to_png      TGA textures -> PNG (written to $TEXTURES_DIR, never into the game / mod folders)
+#   rebuild_mat     wipes every material node tree and rebuilds a plain glTF-friendly
+#                   Principled (alpha kept). It resets roughness / specular / emission, so it
+#                   MUST run before no_lube and zero_emission, which then apply on top.
+#   no_lube, cleanup, set_collision, zero_emission
+POST_SCRIPTS=(tga_to_png rebuild_mat no_lube cleanup set_collision zero_emission)
+
+# PNG output folder: shared by all the .blend files of the full export
+TEXTURES_DIR="$SCRIPT_DIR/textures"
+[ "$IMPORT_MODE" = "full" ] && TEXTURES_DIR="$SCRIPT_DIR/export/textures"
+
+# Extra arguments of a post-processing script, as an array in POST_EXTRA
+post_extra_args() {
+    POST_EXTRA=()
+    [ "$1" = "tga_to_png" ] && POST_EXTRA=(--textures-dir "$TEXTURES_DIR")
+    return 0
+}
+
+# Post-processing of one .blend, then GLB export (script 7).
 #   post_process <blend> <glb> [options for export_glb.py]
 # When POST_LOG is set (full mode, many files) Blender's output goes to that log.
 run_blender() {
@@ -531,9 +550,10 @@ post_process() {
     local blend="$1" glb="$2"
     shift 2
     local script
-    for script in no_lube cleanup set_collision zero_emission; do
+    for script in "${POST_SCRIPTS[@]}"; do
         [ -z "${POST_LOG:-}" ] && echo "[..] Launching Blender (script ${script})..."
-        run_blender "scripts/${script}.py" -- --blend "$blend" $VFLAG
+        post_extra_args "$script"
+        run_blender "scripts/${script}.py" -- --blend "$blend" ${POST_EXTRA[@]+"${POST_EXTRA[@]}"} $VFLAG
     done
     [ -z "${POST_LOG:-}" ] && echo "[..] Exporting $(basename "$glb")..."
     run_blender scripts/export_glb.py -- --blend "$blend" --output "$glb" $VFLAG "$@"
@@ -560,9 +580,10 @@ if [ "$IMPORT_MODE" = "full" ]; then
     unset POST_LOG
     ok "$TOTAL file(s) processed (Blender log: export/post.log)."
 else
-    for script in no_lube cleanup set_collision zero_emission; do
+    for script in "${POST_SCRIPTS[@]}"; do
         echo "[..] Launching Blender (script ${script})..."
-        bl --background --python "scripts/${script}.py" -- $VFLAG
+        post_extra_args "$script"
+        bl --background --python "scripts/${script}.py" -- ${POST_EXTRA[@]+"${POST_EXTRA[@]}"} $VFLAG
     done
 
     ok "Blender scripts executed."

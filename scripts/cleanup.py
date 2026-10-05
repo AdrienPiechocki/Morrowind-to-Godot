@@ -4,6 +4,7 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mwlog import vprint, eprint, Progress
+from mwcompat import has_nodes
 
 # Load the .blend file saved by the previous script
 blend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "morrowind.blend")
@@ -53,7 +54,7 @@ for obj in _meshes:
     found = False
     for slot in obj.material_slots:
         mat = slot.material
-        if not mat or not mat.use_nodes or not mat.node_tree:
+        if not has_nodes(mat):
             continue
         for node in mat.node_tree.nodes:
             img = None
