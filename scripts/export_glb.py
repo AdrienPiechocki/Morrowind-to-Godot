@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import re
 import bpy
 from bpy_extras import anim_utils
 
@@ -30,8 +31,17 @@ if os.path.exists(blend_path):
     bpy.ops.wm.open_mainfile(filepath=blend_path)
     vprint(f"[+] Loaded: {blend_path}")
 
-# Parse --output from sys.argv
-output_path = get_arg("output", "morrowind.glb")
+# Parse --output from sys.argv (.gltf : the .bin is written next to it)
+output_path = os.path.abspath(get_arg("output", "morrowind.gltf"))
+
+# Textures written by the exporter: shared folder, passed with --textures-dir.
+# Default: "textures_gltf" next to the .gltf.
+TEX_DIR = os.path.abspath(
+    get_arg("textures-dir") or os.path.join(os.path.dirname(output_path), "textures_gltf")
+)
+# export_texture_dir is relative to the .gltf file
+TEX_REL = os.path.relpath(TEX_DIR, os.path.dirname(output_path))
+os.makedirs(TEX_DIR, exist_ok=True)
 
 # Séquences à exporter : liste de préfixes (insensible à la casse) ou "all"
 ANIMS_ARG = get_arg(
@@ -46,7 +56,8 @@ KEEP_PREFIXES = (
     else [p.strip().lower() for p in ANIMS_ARG.split(",") if p.strip()]
 )
 
-vprint(f"[+] Exporting GLB to: {output_path}")
+vprint(f"[+] Exporting glTF to: {output_path}")
+vprint(f"[+] Textures folder: {TEX_DIR} (relative: {TEX_REL})")
 
 
 # ==========================================
@@ -55,7 +66,7 @@ vprint(f"[+] Exporting GLB to: {output_path}")
 
 def split_marker_actions():
     """Découpe les actions Morrowind (pose markers '<Seq>: Start|Stop')
-    en pistes NLA nommées -> chaque piste devient une animation dans le GLB."""
+    en pistes NLA nommées -> chaque piste devient une animation dans le glTF."""
     _seen_skeletons = set()
 
     for ob in bpy.data.objects:
@@ -154,6 +165,37 @@ def split_marker_actions():
         vprint(f"[+] {ob.name}: {len(created)} animations split: {created}")
 
 
+# ==========================================
+# TEXTURES
+# ==========================================
+
+def merge_and_shrink_images(max_px=2_000_000, min_side=256):
+    """Fusionne les images de même nom de base et même taille (x.dds / x / x.001),
+    puis divise par 2 les textures trop grosses."""
+    by_key = {}
+    for img in list(bpy.data.images):
+        if img.type != 'IMAGE' or img.users == 0:
+            continue
+        stem = re.sub(r'(\.(dds|tga|png))?(\.\d{3})?$', '', img.name.lower())
+        key = (stem, tuple(img.size))
+        keep = by_key.setdefault(key, img)
+        if keep is not img:
+            img.user_remap(keep)
+
+    shrunk = 0
+    for img in bpy.data.images:
+        if img.type != 'IMAGE' or img.users == 0:
+            continue
+        w, h = img.size
+        nw, nh = w, h
+        while nw * nh > max_px and min(nw, nh) > min_side:
+            nw, nh = max(nw // 2, 1), max(nh // 2, 1)
+        if (nw, nh) != (w, h):
+            img.scale(nw, nh)
+            shrunk += 1
+    vprint(f"[+] {len(by_key)} unique image(s), {shrunk} downscaled")
+
+
 def clear_material_animations():
     """Supprime les actions parasites des node trees de matériaux."""
     removed = 0
@@ -166,27 +208,30 @@ def clear_material_animations():
         vprint(f"[+] Cleaned {removed} material node tree actions")
 
 
-_steps = Progress(4, "Export GLB", eta=False)   # the export itself dominates: an ETA would be meaningless
+_steps = Progress(4, "Export glTF", eta=False)   # the export itself dominates: an ETA would be meaningless
 _steps.__enter__()
 _steps.update()           # .blend charge
 if EXPORT_ANIMATIONS:
     split_marker_actions()
 _steps.update()           # animations decoupees
 clear_material_animations()
+merge_and_shrink_images()
 bpy.data.orphans_purge()
 _steps.update()           # nettoyage
 
 # The glTF export is ONE long blocking call (minutes on big exterior scenes: thousands of
-# objects, ~2000 materials, textures re-encoded to PNG). The bar can't advance inside it,
-# so a heartbeat keeps the elapsed time ticking: if it counts, the export is alive.
-_steps.set_label("Writing GLB")
+# objects, ~2000 materials). The bar can't advance inside it, so a heartbeat keeps the
+# elapsed time ticking: if it counts, the export is alive.
+_steps.set_label("Writing glTF")
 _steps.start_heartbeat()
 _t_export = time.time()
 
-# Export only visible objects
+# Export only visible objects. GLTF_SEPARATE: .gltf + .bin, textures written once in the
+# shared folder and referenced by relative URI.
 bpy.ops.export_scene.gltf(
     filepath=output_path,
-    export_format='GLB',
+    export_format='GLTF_SEPARATE',
+    export_texture_dir=TEX_REL,
     use_visible=True,
     export_apply=True,
     export_animations=EXPORT_ANIMATIONS,
@@ -198,4 +243,4 @@ bpy.ops.export_scene.gltf(
 
 _steps.update()           # export ecrit
 _steps.close()
-vprint(f"[+] GLB exported successfully in {time.time() - _t_export:.0f}s: {output_path}")
+vprint(f"[+] glTF exported successfully in {time.time() - _t_export:.0f}s: {output_path}")

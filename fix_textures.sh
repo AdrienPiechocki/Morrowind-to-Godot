@@ -4,10 +4,11 @@
 #   2. rebuild_mat.py  clean glTF-friendly materials (alpha kept)
 #   3. no_lube.py + zero_emission.py  re-applied: rebuild_mat resets roughness,
 #      specular and emission
-#   4. export_glb.py exports <name>.glb next to each <name>.blend
+#   4. export_glb.py exports <name>.gltf + <name>.bin next to each <name>.blend
 #
-# PNGs are written to <folder>/textures (shared by all the .blend files), never next to the
-# original textures in your game / mod folders.
+# PNGs are written to <folder>/textures (never next to the originals in your game / mod
+# folders). The glTF exporter writes the merged / downscaled textures to
+# <folder>/textures_gltf, shared by every .gltf.
 #
 # Usage: ./fix_textures.sh [folder] [--anims <prefixes|all>] [-v|--verbose]
 #   ./fix_textures.sh                    # ./export, progress bars only
@@ -43,6 +44,8 @@ bl() {
 
 # Shared PNG output folder (absolute path, passed to tga_to_png.py)
 TEX_DIR="$(cd "$EXPORT_DIR" && pwd)/textures"
+# Textures written by the glTF exporter (merged + downscaled, shared by every .gltf)
+GLTF_TEX_DIR="$(cd "$EXPORT_DIR" && pwd)/textures_gltf"
 
 # Every *.blend (not the .blend1 backups), recursively, sorted
 mapfile -d '' FILES < <(find "$EXPORT_DIR" -type f -name '*.blend' -print0 | sort -z)
@@ -56,14 +59,14 @@ for f in "${FILES[@]}"; do
     i=$((i + 1))
     echo "[$i/$TOTAL] $f" >&2
     abs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
-    glb="${abs%.blend}.glb"
-    rm -f "$glb"    # so a stale .glb can't hide a failed export
+    gltf="${abs%.blend}.gltf"
+    rm -f "$gltf" "${gltf%.gltf}.bin"    # so a stale export can't hide a failed one
 
     for script in tga_to_png rebuild_mat no_lube zero_emission export_glb; do
         extra=()
         case "$script" in
             tga_to_png)  extra=(--textures-dir "$TEX_DIR") ;;
-            export_glb)  extra=(--output "$glb" --anims "$ANIMS") ;;
+            export_glb)  extra=(--output "$gltf" --anims "$ANIMS" --textures-dir "$GLTF_TEX_DIR") ;;
         esac
         if ! bl --background --python-exit-code 1 --python "scripts/${script}.py" -- --blend "$abs" ${extra[@]+"${extra[@]}"} $VFLAG; then
             echo "[ERROR] ${script}.py failed on $f" >&2
@@ -72,15 +75,15 @@ for f in "${FILES[@]}"; do
         fi
     done
 
-    if [ ! -f "$glb" ]; then
-        echo "[ERROR] $(basename "$glb") was not generated" >&2
-        FAILED+=("$f (glb not generated)")
+    if [ ! -f "$gltf" ]; then
+        echo "[ERROR] $(basename "$gltf") was not generated" >&2
+        FAILED+=("$f (gltf not generated)")
     fi
 done
 
 echo >&2
 if [ "${#FAILED[@]}" -eq 0 ]; then
-    echo "[OK] $TOTAL file(s) processed, $TOTAL .glb exported." >&2
+    echo "[OK] $TOTAL file(s) processed, $TOTAL .gltf exported." >&2
 else
     echo "[!] $((TOTAL - ${#FAILED[@]}))/$TOTAL processed, ${#FAILED[@]} failed:" >&2
     printf '    - %s\n' "${FAILED[@]}" >&2
