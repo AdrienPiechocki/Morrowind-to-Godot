@@ -64,14 +64,12 @@ else
     echo "[OK] io_scene_mw cloned into io_scene_mw/."
 fi
 
-# Installer l'addon dans tous les addons Blender trouves
 ADDON_SRC="$IO_SCENEMW_DIR/io_scene_mw"
 
 if [ ! -d "$ADDON_SRC" ]; then
     echo "[-]  Addon directory not found: $ADDON_SRC"
 else
     INSTALLED=0
-    # Chercher les repertoires d'addons Blender existants
     while IFS= read -r BLENDER_ADDONS_DIR; do
         DEST="$BLENDER_ADDONS_DIR/io_scene_mw"
         if [ -d "$DEST" ]; then
