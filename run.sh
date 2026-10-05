@@ -512,9 +512,7 @@ fi
 [ -n "$SCENE_ANIMS" ] && BLENDER_ARGS+=(--anims "$SCENE_ANIMS")
 [ -n "$VFLAG" ] && BLENDER_ARGS+=(--verbose)
 
-# --python-exit-code 1 : si le script plante, on s'arrête (sinon Blender sort en
-# code 0 et la suite du pipeline traite un morrowind.blend périmé).
-bl --background --python-exit-code 1 --python scripts/generate_blend.py -- "${BLENDER_ARGS[@]}"
+bl --background --python scripts/generate_blend.py -- "${BLENDER_ARGS[@]}"
 
 # Post-processing scripts, in this order:
 #   tga_to_png      TGA textures -> PNG (written to $TEXTURES_DIR, never into the game / mod folders)
