@@ -16,11 +16,11 @@ if os.path.exists(blend_path):
     bpy.ops.wm.open_mainfile(filepath=blend_path)
     vprint(f"[+] Loaded: {blend_path}")
 
-# Godot suffix: '-col' for Trimesh (precise) or '-convcol' for Convex (optimized)
-SUFFIXE = "-col"
-THRESHOLD = 1.0
-
-import math
+# Godot suffix: '-colonly' (Trimesh, visible mesh removed) or '-convcolonly' (Convex, visible
+# mesh removed). The '-col' / '-convcol' variants keep the mesh visible, so they are not used.
+SUFFIXE = "-colonly"
+# Suffixes written by earlier runs: renamed to SUFFIXE (idempotent migration)
+OLD_SUFFIXES = ("-convcol", "-col")
 
 count = 0
 _objs = list(bpy.data.objects)
@@ -29,14 +29,20 @@ _bar.__enter__()
 for obj in _objs:
     _bar.update()
     for child in obj.children:
-        if "collision" in child.name.lower(): 
+        if "collision" in child.name.lower():
             for _child in child.children:
                 if _child.type != 'MESH':
                     continue
-                if _child.name.endswith("-col") or _child.name.endswith("-convcol"):
+                if _child.name.endswith(SUFFIXE):
                     continue
-                
-                _child.name += SUFFIXE
+
+                base = _child.name
+                for old in OLD_SUFFIXES:
+                    if base.endswith(old):
+                        base = base[: -len(old)]
+                        break
+
+                _child.name = base + SUFFIXE
                 count += 1
 
 _bar.close()
