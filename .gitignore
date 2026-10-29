@@ -8,3 +8,7 @@ io_scene_mw/
 *.glb
 *.json
 scripts/__pycache__/
+/textures
+*.bin
+*.gltf
+/textures_gltf
