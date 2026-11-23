@@ -96,6 +96,10 @@ func _prepare_interior(key: String, it: Node3D) -> void:
 		# selon la position du joueur.
 		if vi is GeometryInstance3D:
 			(vi as GeometryInstance3D).ignore_occlusion_culling = true
+			# Niveau de détail maximal en permanence : l'import glTF génère des LOD (simplification des meshes) qui
+			# écrasent les tapis (éventail central), les tapisseries et autres petites pièces selon la distance, d'où
+			# des textures qui « changent » quand on bouge.
+			(vi as GeometryInstance3D).lod_bias = 100.0
 	_fix_materials(it)
 	_fix_floor_colliders(it)
 
@@ -116,10 +120,13 @@ const ALPHA_CUTOFF := 0.28
 var _fixed_mats := {}
 var _colliders_done := {}   # clé d'intérieur -> true
 
-# Matériaux opaques et alpha scissor en DOUBLE FACE (les alpha BLEND restent simple face). Entre les faces des meshes (jonctions en T de la géométrie d'origine),
-# de fines fissures laissent voir ce qui est derrière — la skybox — sous forme de traits clairs. En double
-# face, le regard tombe sur l'envers des faces voisines (sombre) au lieu du ciel. Les matériaux transparents
-# (feuillages) y gagnent d'être visibles des deux côtés ; feuillages en alpha scissor : voir ALPHA_CUTOFF.
+# Matériaux opaques et alpha scissor en DOUBLE FACE (les alpha BLEND restent simple face).
+# Entre les faces des meshes (jonctions en T de la géométrie d'origine), de fines fissures laissent voir ce qui est
+# derrière — la skybox — sous forme de traits clairs. En double face, le regard tombe sur l'envers des faces voisines
+# (sombre) au lieu du ciel. Les feuillages y gagnent d'être visibles des deux côtés ; alpha scissor : ALPHA_CUTOFF.
+# EXCEPTION : les nappes à deux quads superposés dans le même plan, de normales opposées (toiles, paravents, tissus :
+# un quad par face). En double face, les deux quads se disputent la profondeur et l'image scintille / s'inverse ;
+# en simple face, chaque côté montre son propre quad. Ces surfaces reçoivent une copie du matériau en simple face.
 func _fix_materials(root_n: Node) -> void:
 	for mi in root_n.find_children("*", "MeshInstance3D", true, false):
 		var mesh := (mi as MeshInstance3D).mesh
@@ -141,10 +148,52 @@ func _fix_materials(root_n: Node) -> void:
 			if m == null or m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA \
 					or m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS:
 				continue
-			m.cull_mode = BaseMaterial3D.CULL_DISABLED
-			if m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR:
+			var scissor := m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+			if (scissor or mesh.surface_get_array_len(s) <= 24) and _has_coincident_layers(mesh, s):
+				m = m.duplicate() as BaseMaterial3D            # copie : le matériau d'origine peut être partagé
+				mesh.surface_set_material(s, m)
+				m.cull_mode = BaseMaterial3D.CULL_BACK
+			else:
+				m.cull_mode = BaseMaterial3D.CULL_DISABLED
+			if scissor:
 				m.alpha_scissor_threshold = minf(m.alpha_scissor_threshold, ALPHA_CUTOFF)
 				m.alpha_antialiasing_mode = BaseMaterial3D.ALPHA_ANTIALIASING_ALPHA_TO_COVERAGE
+
+# Vrai si la surface est une NAPPE PLANE à deux faces : tous les sommets dans un même plan (à 2 mm près) et des
+# triangles orientés dans les deux sens (un quad par face, superposés). Limité aux petites surfaces (décor).
+func _has_coincident_layers(mesh: Mesh, s: int) -> bool:
+	if mesh.surface_get_array_len(s) > 400:
+		return false
+	var arr := mesh.surface_get_arrays(s)
+	var vs: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+	var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX] if arr[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+	if idx.is_empty():
+		idx = PackedInt32Array(range(vs.size()))
+	var n_ref := Vector3.ZERO
+	var has_pos := false
+	var has_neg := false
+	for t in range(0, idx.size() - 2, 3):
+		var a := vs[idx[t]]
+		var nrm := (vs[idx[t + 1]] - a).cross(vs[idx[t + 2]] - a)
+		if nrm.length() < 1e-9:
+			continue
+		nrm = nrm.normalized()
+		if n_ref == Vector3.ZERO:
+			n_ref = nrm
+		var d := nrm.dot(n_ref)
+		if d > 0.98:
+			has_pos = true
+		elif d < -0.98:
+			has_neg = true
+		else:
+			return false                      # une troisième orientation : pas une simple nappe
+	if not (has_pos and has_neg):
+		return false
+	var p0 := vs[idx[0]]
+	for v in vs:
+		if absf((v - p0).dot(n_ref)) > 0.002:
+			return false
+	return true
 
 # Colliders concaves solides des deux faces (normales inversées = sol traversé).
 func _fix_floor_colliders(root_n: Node) -> void:

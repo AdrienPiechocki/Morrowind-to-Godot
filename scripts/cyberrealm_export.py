@@ -144,10 +144,11 @@ def main():
     s = s.rstrip() + ('\n\n[node name="Player" parent="." instance=ExtResource("player")]\n'
                       'transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, %s)\nMaxDepth = 1\n\n'
                       '[node name="Camera3D" parent="Player" index="0"]\nfar = 20000.0\n\n'
-                      # lumiere legere portee par le joueur (non envoyee en LAN : chaque machine garde son joueur)
+                      # lumiere legere portee par le joueur (non envoyee en LAN : chaque machine garde son joueur) ;
+                      # masque 6 = couches 2 (interieurs) et 3 (exterieur) : ni avatars ni fenetres (couche 1)
                       '[node name="Light" type="OmniLight3D" parent="Player"]\n'
                       'transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, 0)\n'
-                      'light_color = Color(1, 0.92, 0.78, 1)\nlight_energy = 0.4\nomni_range = 8.0\n'
+                      'light_color = Color(1, 0.92, 0.78, 1)\nlight_energy = 0.4\nlight_cull_mask = 6\nomni_range = 8.0\n'
                       'omni_attenuation = 1.5\nshadow_enabled = false\n') % spawn
     # Reglages d'environnement du niveau, copies de son Environment (voir level_environment.gd).
     m = re.search(r'\[sub_resource type="Environment" id="[^"]*"\]\n(.*?)(?=\n\[|\Z)', s, re.S)
