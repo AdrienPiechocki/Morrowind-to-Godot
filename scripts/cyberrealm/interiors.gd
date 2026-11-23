@@ -97,7 +97,6 @@ func _prepare_interior(key: String, it: Node3D) -> void:
 		if vi is GeometryInstance3D:
 			(vi as GeometryInstance3D).ignore_occlusion_culling = true
 	_fix_materials(it)
-	_fix_polar_rugs(it)
 	_fix_floor_colliders(it)
 
 # ── Corrections de géométrie (export Morrowind) ─────────────────────
@@ -115,7 +114,6 @@ const MIN_STRUCT_SIZE := 1.2
 # s'éloigne. Seuil d'alpha abaissé + alpha-to-coverage (effectif avec le MSAA).
 const ALPHA_CUTOFF := 0.28
 var _fixed_mats := {}
-var _fixed_rugs := {}
 var _colliders_done := {}   # clé d'intérieur -> true
 
 # Matériaux opaques et alpha scissor en DOUBLE FACE (les alpha BLEND restent simple face). Entre les faces des meshes (jonctions en T de la géométrie d'origine),
@@ -128,8 +126,15 @@ func _fix_materials(root_n: Node) -> void:
 		if mesh == null or _fixed_mats.has(mesh):
 			continue
 		_fixed_mats[mesh] = true
+		var low := String(mi.name).to_lower()
+		var is_rug := low.contains("rug") or low.contains("carpet")
 		for s in mesh.get_surface_count():
 			var m := mesh.surface_get_material(s) as BaseMaterial3D
+			# Tapis : sans mipmaps. Les tapis ronds ont un mappage « mandala » (chaque secteur de l'éventail central
+			# plaque la texture entière) : au centre les UV convergent, les mipmaps y donnent un noir pâteux qui change
+			# avec la position. Sans mipmaps, le mandala d'origine reste net.
+			if is_rug and m != null:
+				m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
 			# BLEND : tel qu'exporté (simple face) — les tapisseries sont des tissus à deux couches (face avant et
 			# arrière), le double face superposerait l'envers de la couche arrière à l'image.
 			# (l'import glTF de Godot traduit alphaMode BLEND en ALPHA_DEPTH_PRE_PASS)
@@ -140,88 +145,6 @@ func _fix_materials(root_n: Node) -> void:
 			if m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR:
 				m.alpha_scissor_threshold = minf(m.alpha_scissor_threshold, ALPHA_CUTOFF)
 				m.alpha_antialiasing_mode = BaseMaterial3D.ALPHA_ANTIALIASING_ALPHA_TO_COVERAGE
-
-# Tapis ronds : le centre est un éventail dont CHAQUE secteur plaque la texture entière (uv (0.5, 1) au centre,
-# v = 0 sur l'anneau interne) : le centre se pince en étoile de stries et le filtrage change avec la position.
-# On le remplace par un mappage plan du disque central (sommets dupliqués : l'anneau est partagé avec la couronne).
-func _fix_polar_rugs(root_n: Node) -> void:
-	for mi in root_n.find_children("*", "MeshInstance3D", true, false):
-		var mesh := (mi as MeshInstance3D).mesh as ArrayMesh
-		if mesh == null or _fixed_rugs.has(mesh) or not String(mi.name).to_lower().contains("rug"):
-			continue
-		_fixed_rugs[mesh] = true
-		var surfaces: Array = []
-		var changed := false
-		for s in mesh.get_surface_count():
-			var arr := mesh.surface_get_arrays(s)
-			var mat := mesh.surface_get_material(s)
-			if _fan_to_planar(arr):
-				changed = true
-			surfaces.append([arr, mat])
-		if not changed:
-			continue
-		mesh.clear_surfaces()
-		for sm in surfaces:
-			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sm[0])
-			mesh.surface_set_material(mesh.get_surface_count() - 1, sm[1])
-
-# Modifie arrays (surface d'ArrayMesh) en place ; vrai si un éventail polaire a été remplacé.
-func _fan_to_planar(arr: Array) -> bool:
-	var vs: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
-	var uvs: PackedVector2Array = arr[Mesh.ARRAY_TEX_UV]
-	var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
-	if vs.is_empty() or uvs.size() != vs.size() or idx.is_empty():
-		return false
-	var nrm: PackedVector3Array = arr[Mesh.ARRAY_NORMAL] if arr[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
-	var col: PackedColorArray = arr[Mesh.ARRAY_COLOR] if arr[Mesh.ARRAY_COLOR] != null else PackedColorArray()
-	var changed := false
-	for c in vs.size():
-		if absf(uvs[c].x - 0.5) > 0.001 or absf(uvs[c].y - 1.0) > 0.001:
-			continue
-		var fan: Array[int] = []              # indices (de triangle) qui touchent le sommet central
-		var ring := {}
-		for t in range(0, idx.size(), 3):
-			if idx[t] == c or idx[t + 1] == c or idx[t + 2] == c:
-				fan.append(t)
-				for k in 3:
-					if idx[t + k] != c:
-						ring[idx[t + k]] = true
-		if fan.size() < 6:
-			continue
-		var ok := true
-		var r_max := 0.0
-		for v in ring:
-			if absf(uvs[v].y) > 0.001:
-				ok = false
-				break
-			r_max = maxf(r_max, Vector2(vs[v].x - vs[c].x, vs[v].z - vs[c].z).length())
-		if not ok or r_max < 0.001:
-			continue
-		var remap := {}
-		var ids: Array = [c]
-		ids.append_array(ring.keys())
-		for v in ids:
-			remap[v] = vs.size()
-			vs.append(vs[v])
-			if nrm.size() > 0:
-				nrm.append(nrm[v])
-			if col.size() > 0:
-				col.append(col[v])
-			uvs.append(Vector2((vs[v].x - vs[c].x) / (2.0 * r_max) + 0.5, (vs[v].z - vs[c].z) / (2.0 * r_max) + 0.5))
-		for t in fan:
-			for k in 3:
-				idx[t + k] = remap[idx[t + k]]
-		changed = true
-	if changed:
-		arr[Mesh.ARRAY_VERTEX] = vs
-		arr[Mesh.ARRAY_TEX_UV] = uvs
-		arr[Mesh.ARRAY_INDEX] = idx
-		if nrm.size() > 0:
-			arr[Mesh.ARRAY_NORMAL] = nrm
-		if col.size() > 0:
-			arr[Mesh.ARRAY_COLOR] = col
-		arr[Mesh.ARRAY_TANGENT] = null
-	return changed
 
 # Colliders concaves solides des deux faces (normales inversées = sol traversé).
 func _fix_floor_colliders(root_n: Node) -> void:

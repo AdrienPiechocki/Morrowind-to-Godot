@@ -211,7 +211,7 @@ interiors stored on a high grid, y = 6000 m) and `Levels/Morrowind/` (assets, ef
 
 After the export, re-run Godot's import (`godot --headless --import --path <CyberRealm>/Game/source`).
 
-Other generator-side fixes that benefit every export: round rugs get a planar UV mapping on their central fan (in the NIF, each sector of the fan maps the whole texture, which pinches the centre into streaks and makes it flicker with mipmapping); structural meshes without a NIF collision node (cave rocks,
+Other generator-side fixes that benefit every export: rug textures are sampled without mipmaps in the CyberRealm scripts (round rugs have a "mandala" UV mapping whose centre converges, and mipmaps turn it into a muddy, position-dependent black); structural meshes without a NIF collision node (cave rocks,
 boulders, ruin walls, pit floors…) get their own geometry as collider; alpha materials (foliage, tapestries) are
 double-sided with a capped alpha cut-off; a texture that has an alpha channel and is used with `BLEND`/`MASK` on some
 meshes but `OPAQUE` on others is made consistent (fixes tapestries and rugs drawn with opaque fringes); the water

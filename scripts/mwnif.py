@@ -78,45 +78,6 @@ def _material(shape, has_vcol):
     return Material(name, mode, cutoff, stencil is not None, color, has_vcol), uv_set
 
 
-def _fix_polar_fan(p):
-    """Tapis ronds : le centre est un eventail (un sommet central a uv = (0.5, 1), l'anneau interne a v = 0) dont
-    CHAQUE secteur plaque la texture entiere. Le centre se pince en une etoile de stries, et le filtrage de la
-    texture (mipmaps) y change avec la position. On le remplace par un mappage plan de tout le disque central ;
-    les sommets sont dupliques, car l'anneau est partage avec la couronne (qui garde son mappage radial)."""
-    uv = p.uv
-    cands = np.where((np.abs(uv[:, 0] - 0.5) < 1e-3) & (np.abs(uv[:, 1] - 1.0) < 1e-3))[0]
-    if not len(cands):
-        return
-    idx = p.idx.reshape(-1, 3).copy()
-    pos, nrm, col = p.pos, p.nrm, p.col
-    for c in cands:
-        fan = np.where((idx == c).any(axis=1))[0]
-        if len(fan) < 6:
-            continue
-        ring = np.unique(idx[fan])
-        ring = ring[ring != c]
-        if not np.all(np.abs(uv[ring, 1]) < 1e-3):
-            continue
-        cx, cy = float(pos[c, 0]), float(pos[c, 1])
-        R = float(np.hypot(pos[ring, 0] - cx, pos[ring, 1] - cy).max())
-        if R < 1e-3:
-            continue
-        ids = np.concatenate([[c], ring])
-        base = len(pos)
-        remap = {int(v): base + k for k, v in enumerate(ids)}
-        newp = pos[ids]
-        new_uv = np.stack([(newp[:, 0] - cx) / (2 * R) + 0.5, (newp[:, 1] - cy) / (2 * R) + 0.5], axis=1).astype(np.float32)
-        for t_i in fan:
-            idx[t_i] = [remap[int(v)] for v in idx[t_i]]
-        pos = np.concatenate([pos, newp])
-        nrm = np.concatenate([nrm, p.nrm[ids]])
-        uv = np.concatenate([uv, new_uv])
-        if col is not None:
-            col = np.concatenate([col, p.col[ids]])
-        p.pos, p.nrm, p.uv, p.col = pos, nrm, uv, col
-    p.idx = idx.ravel().astype(np.uint32)
-
-
 def _is_junk(node):
     if node.app_culled or isinstance(node, (nif.RootCollisionNode, nif.AvoidNode)):
         return True
@@ -210,8 +171,6 @@ def load_model(path, collision=False):
         p.idx = np.concatenate([x[4] + o for x, o in zip(parts, offs)]).astype(np.uint32)
         p.material = material
         prims.append(p)
-    for p in prims:
-        _fix_polar_fan(p)
     col = None
     if col_shapes:
         cp, ci, base = [], [], 0
