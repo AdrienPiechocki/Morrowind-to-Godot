@@ -603,7 +603,7 @@ def build_interior_scene(sc_path, res, stem, model_res, entry, doors_out, cam_id
         sc.node("Doors", "Node3D", ".")
         for d in doors_out:
             sc.node(node_name(d["name"], used), "Marker3D", "Doors",
-                    props={"transform": transform(to_godot(d["pos"]))}, meta=d["meta"])
+                    props={"transform": transform(to_godot(d["pos"]), d.get("yaw", 0.0))}, meta=d["meta"])
     water = entry.get("water")
     if water:
         wm = water_material(sc, res)
@@ -742,8 +742,16 @@ def main():
                         "door_id": string(d.get("door_id")),
                         "arrival_position": vec3(to_godot(d.get("arrival_position", [0, 0, 0]))),
                         "arrival_yaw": num(-(d.get('arrival_rotation') or [0, 0, 0])[2])}
+                # Marker3D = point de la porte de retour (devant la porte, cote parent), comme le DoorMarker de
+                # Morrowind ; repli : origine du mesh de la porte. door_position garde l'ancienne position.
+                mpos = d.get("marker_position") or d.get("door_position", [0, 0, 0])
+                meta["door_position"] = vec3(to_godot(d.get("door_position", [0, 0, 0])))
+                if d.get("marker_rotation"):
+                    meta["marker_yaw"] = num(-d["marker_rotation"][2])
                 item = {"name": f"Door_{d.get('door_id')}_to_{e['name']}",
-                        "pos": d.get("door_position", [0, 0, 0]), "meta": meta}
+                        "pos": mpos, "meta": meta}
+                if d.get("marker_rotation"):
+                    item["yaw"] = -d["marker_rotation"][2]
                 if d.get("from") == "exterior":
                     world_doors.append(item)
                 else:
@@ -765,7 +773,7 @@ def main():
             dparent = "ExteriorRoot/Doors" if ext_gltf else "Doors"
             for d in world_doors:
                 world.node(node_name(d["name"], used_doors), "Marker3D", dparent,
-                           props={"transform": transform(to_godot(d["pos"]))}, meta=d["meta"])
+                           props={"transform": transform(to_godot(d["pos"]), d.get("yaw", 0.0))}, meta=d["meta"])
 
     # interieur seul (pas d'exterieur) : il devient le contenu de world.tscn
     if args.export and ext_gltf is None and interior_scene_res and interiors_info:

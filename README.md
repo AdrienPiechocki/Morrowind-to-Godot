@@ -149,7 +149,7 @@ godot_export/
   `Water` node of `world.tscn`) and one per flooded interior: depth-based green/blue tint, animated ripples,
   sky/sun reflections, refraction, soft shoreline. It needs the **Forward+ or Mobile** renderer (screen and
   depth textures); in *Compatibility* mode it is nearly invisible. Tweak the colours in the material.
-- Doors are `Marker3D` nodes with metadata (`target_scene`, `arrival_position`, `arrival_yaw`):
+- Doors are `Marker3D` nodes placed where Morrowind sends the player when leaving through the matching return door (the spot in front of the door, the equivalent of the `DoorMarker`), falling back to the door mesh origin; metadata `door_position` keeps the mesh origin, `marker_yaw` the facing. Other metadata: `target_scene`, `arrival_position`, `arrival_yaw`:
   no gameplay is generated, plug your own door logic on them.
 - `--lod 1` (or answer `y` in `exterior` / `full` modes) also generates the farlands: the cells within
   `--lod-radius N` (default 16, asked interactively) around the detailed grid, with a hole over the

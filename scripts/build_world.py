@@ -229,6 +229,25 @@ def main():
                 out.append((ref, name, dest))
         return out
 
+    def return_point(target_cell, parent_name, ref):
+        """Point d'arrivee de la porte de retour de `target_cell` (celle qui ramene vers `parent_name`, ou vers
+        l'exterieur si None) : c'est l'endroit, devant la porte cote parent, que le jeu marque (DoorMarker).
+        Parmi plusieurs portes de retour, celle dont l'arrivee est la plus proche de la porte `ref`."""
+        pos = np.asarray(ref.get("translation") or [0, 0, 0], dtype=np.float64)
+        best, best_d = None, None
+        for r in (target_cell or {}).get("references") or []:
+            dest = r.get("destination")
+            if r.get("deleted") or not isinstance(dest, dict) or not dest.get("translation"):
+                continue
+            dcell = (dest.get("cell") or "").strip().lower()
+            if (parent_name or "").lower() != dcell and not (parent_name is None and dcell not in int_cells):
+                continue
+            t = np.asarray(dest["translation"], dtype=np.float64)
+            dist = float(np.linalg.norm(t[:2] - pos[:2]))
+            if best_d is None or dist < best_d:
+                best, best_d = (t, dest.get("rotation") or [0, 0, 0]), dist
+        return best
+
     print("[..] Indexing meshes and textures...", file=sys.stderr, flush=True)
     mesh_index = mwassets.AssetIndex([d for d in a.meshes.split(os.pathsep) if d])
     tex_index = mwassets.AssetIndex([d for d in a.textures.split(os.pathsep) if d])
@@ -271,26 +290,30 @@ def main():
             for gx, gy, _ in cells:
                 for ref, name, dest in interior_doors(ext_cells.get((gx, gy))):
                     p = np.asarray(ref.get("translation") or [0, 0, 0]) * mwgltf.SCALE - origin * mwgltf.SCALE
-                    queue.append((name, ref, dest, "exterior", p, 1))
+                    queue.append((name, ref, dest, "exterior", p, 1,
+                                  (return_point(int_cells.get(name.lower()), None, ref), origin)))
     else:
         cell = int_cells.get(a.cell.strip().lower())
         if cell is None:
             eprint(f"[ERROR] interior cell not found: {a.cell}")
             return 1
         queue.append((cell["name"], {"id": None}, {"translation": [0, 0, 0], "rotation": [0, 0, 0]},
-                      "start", np.zeros(3), 1))
+                      "start", np.zeros(3), 1, (None, np.zeros(3))))
 
     # ---------- interieurs (BFS) ----------
     used, origins, entries = set(), {}, {}
     while queue:
-        name, door_ref, dest, parent, door_pos, depth = queue.pop(0)
+        name, door_ref, dest, parent, door_pos, depth, (mk, mk_origin) = queue.pop(0)
+        marker = {}
+        if mk is not None:      # point devant la porte, cote parent (repere du parent, metres)
+            marker = {"marker_position": rnd((mk[0] - mk_origin) * mwgltf.SCALE), "marker_rotation": rnd(mk[1])}
         key = name.lower()
         arrival = np.asarray(dest.get("translation") or [0, 0, 0], dtype=np.float64)    # unites MW
         if key in entries:
             entries[key]["doors"].append({
                 "from": parent, "door_id": door_ref.get("id"), "door_position": rnd(door_pos),
                 "arrival_position": rnd((arrival - origins[key]) * mwgltf.SCALE),
-                "arrival_rotation": rnd(dest.get("rotation") or [0, 0, 0])})
+                "arrival_rotation": rnd(dest.get("rotation") or [0, 0, 0]), **marker})
             continue
         stem = safe_stem(name, used)
         origins[key] = arrival
@@ -306,11 +329,12 @@ def main():
         entries[key] = {"name": name, "file": f"interiors/{stem}", "depth": depth, "water": water, "doors": [{
             "from": parent, "door_id": door_ref.get("id"), "door_position": rnd(door_pos),
             "arrival_position": [0.0, 0.0, 0.0],
-            "arrival_rotation": rnd(dest.get("rotation") or [0, 0, 0])}]}
+            "arrival_rotation": rnd(dest.get("rotation") or [0, 0, 0]), **marker}]}
         if depth < a.depth:
             for ref, nxt, nxt_dest in interior_doors(cell):
                 p = (np.asarray(ref.get("translation") or [0, 0, 0], dtype=np.float64) - arrival) * mwgltf.SCALE
-                queue.append((nxt, ref, nxt_dest, name, p, depth + 1))
+                queue.append((nxt, ref, nxt_dest, name, p, depth + 1,
+                              (return_point(int_cells.get(nxt.lower()), name, ref), arrival)))
     manifest["interiors"] = list(entries.values())
 
     if interior_tasks:
