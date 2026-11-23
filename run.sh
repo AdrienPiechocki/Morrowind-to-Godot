@@ -9,6 +9,8 @@ cd "$SCRIPT_DIR"
 #           --lod 0|1  (farlands : terrain + gros assets lointains, modes exterior/full)
 #           --lod-radius N  (nombre de cells de farlands autour de la zone detaillee, defaut 16)
 #           --shader-pack DIR  (Rafael's Shader Pack ; defaut : config.json "shader_pack", ~/Telechargements, ~/Downloads)
+#           --red-mountain DIR | --no-red-mountain  (volcan : defaut config.json "red_mountain", ~/Telechargements)
+#           --fog-distance M  (brume : distance de disparition, defaut auto selon l'etendue exportee)
 #           --no-fx  (pas de ciel/meteo/post-traitement dans la scene Godot)
 #           --godot-name NOM  (dossier du projet Godot genere, defaut "morrowind")
 #           -v | --verbose  (affiche tous les messages des scripts Python et de Blender)
@@ -19,6 +21,9 @@ USER_LOD=""       # --lod 0|1 : farlands (modes exterior/full)
 LOD_RADIUS=""     # --lod-radius N : cells de farlands autour de la zone detaillee
 SHADER_PACK=""    # --shader-pack DIR : Rafael's Shader Pack (textures du ciel/lunes) ; --no-fx : sans effets
 NO_FX=0
+RED_MOUNTAIN=""   # --red-mountain DIR : mod Red Mountain (panache + impostor du volcan) ; --no-red-mountain
+NO_RM=0
+FOG_DISTANCE=""   # --fog-distance M : distance (m) ou tout disparait dans la brume (defaut : auto, cache les bords)
 GODOT_NAME="morrowind"   # --godot-name : nom du dossier dans le projet Godot
 VFLAG=""          # "--verbose" transmis aux scripts Python (vide = barre de progression seule)
 while [ $# -gt 0 ]; do
@@ -39,6 +44,13 @@ while [ $# -gt 0 ]; do
         --shader-pack) [ $# -ge 2 ] || { echo "[ERROR] --shader-pack attend un dossier"; exit 1; }
                    SHADER_PACK="$2"; shift 2 ;;
         --shader-pack=*) SHADER_PACK="${1#--shader-pack=}"; shift ;;
+        --red-mountain) [ $# -ge 2 ] || { echo "[ERROR] --red-mountain attend un dossier"; exit 1; }
+                   RED_MOUNTAIN="$2"; shift 2 ;;
+        --red-mountain=*) RED_MOUNTAIN="${1#--red-mountain=}"; shift ;;
+        --no-red-mountain) NO_RM=1; shift ;;
+        --fog-distance) [ $# -ge 2 ] || { echo "[ERROR] --fog-distance attend des metres"; exit 1; }
+                   FOG_DISTANCE="$2"; shift 2 ;;
+        --fog-distance=*) FOG_DISTANCE="${1#--fog-distance=}"; shift ;;
         --no-fx)   NO_FX=1; shift ;;
         --godot-name) [ $# -ge 2 ] || { echo "[ERROR] --godot-name attend un nom"; exit 1; }
                    GODOT_NAME="$2"; shift 2 ;;
@@ -679,6 +691,9 @@ GODOT_DIR="$SCRIPT_DIR/godot_export"
 GODOT_ARGS=(--out "$GODOT_DIR" --name "$GODOT_NAME")
 [ -n "$SHADER_PACK" ] && GODOT_ARGS+=(--shader-pack "$SHADER_PACK")
 [ "$NO_FX" = "1" ] && GODOT_ARGS+=(--no-fx)
+[ -n "$RED_MOUNTAIN" ] && GODOT_ARGS+=(--red-mountain "$RED_MOUNTAIN")
+[ "$NO_RM" = "1" ] && GODOT_ARGS+=(--no-red-mountain)
+[ -n "$FOG_DISTANCE" ] && GODOT_ARGS+=(--fog-distance "$FOG_DISTANCE")
 
 if [ "$WITH_LOD" = "1" ]; then
     # Zone des farlands = zone detaillee elargie de LOD_RADIUS cells (le trou reste sur la zone detaillee)

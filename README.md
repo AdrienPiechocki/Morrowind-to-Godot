@@ -172,11 +172,26 @@ only the pack's *textures* (stars, moons, ripples) are copied, with its licence,
 | godrays | `Environment`: volumetric fog lit by the sun |
 | SMAA / SMB (temporal filtering) | `postfx.gd`: SMAA, optional TAA (no motion blur in Godot) |
 | DIVE (underwater) | `underwater.gdshader` + `underwater.gd`: tint, absorption, caustics, light rays, plankton, below any water plane |
-| wetworld (rain) | `weather.gd`: rain particles, overcast sky, ripples on water (`R` toggles). Puddles / wet surfaces are not ported |
+| wetworld (rain) | `weather.gd`: rain streaks aligned with the drops' real 3D trajectory (they converge in perspective when you look up or down), overcast sky, ripples on water (`R` toggles). Puddles / wet surfaces are not ported |
 
 AdvancedDebugger is a debug tool and was not ported. Everything is tweakable on the scene nodes (`DayNight`,
 `Weather`, `PostFX`, `Underwater`) and in the `WorldEnvironment`. It needs Forward+ (SSAO, volumetric fog,
 screen/depth textures).
+
+### Red Mountain
+
+If the *Red Mountain* mod (volcano smoke + distant mountain impostor) is found (`--red-mountain DIR`, `"red_mountain"` in
+`config.json`, or `~/Téléchargements/Red Mountain`; `--no-red-mountain` to skip), `world.tscn` gets a `RedMountain` node
+(`redmountain.gd`): a raymarched volumetric **smoke plume** (bent by the wind, lit by the sun, lava glow at the crater) and a
+silhouette **impostor** of the mountain (64 views picked from the camera's compass angle), so the volcano is visible from
+anywhere. Both sit at the real crater position of the map (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
+z=-691.8`, cell (2, 8)), independently of the exported area. The impostor is left out automatically when the real
+mountain terrain is in the scene (detailed grid or farlands). The impostor is drawn opaque **over** the plume (render priority), so the smoke comes out from behind the summit. Only the mod's textures are copied; shaders and scripts are original.
+
+**Fog.** The world fog is sized to the exported extent (`DayNight.view_distance`, 90 % of the distance from the detailed grid to the nearest
+edge of the exported area, 150 m minimum) so the edges of the map are never visible. Override it with `./run.sh --fog-distance METERS`.
+The volcano has its own, lighter haze, and fades out with distance (`RedMountain.fade_start_m` / `fade_end_m`, 1.5 km → 7 km by default).
+The smoke gets the same atmospheric veil as the mountain (`haze_floor`) and its base is sunk 30 m under the crater rim (`base_sink_m`).
 
 ## Farlands / LODs
 

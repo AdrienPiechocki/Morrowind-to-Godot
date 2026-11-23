@@ -196,7 +196,7 @@ def add_environment(sc, sun=True, ambient=0.5):
                 params[f"shader_parameter/{pname}"] = f'ExtResource("{t}")'
         sky_mat = sc.sub("ShaderMaterial", params)
         sky = sc.sub("Sky", {"sky_material": f'SubResource("{sky_mat}")', "process_mode": "3",
-                             "radiance_size": "2"})
+                             "radiance_size": "3"})
     else:
         sky_mat = sc.sub("ProceduralSkyMaterial", {})
         sky = sc.sub("Sky", {"sky_material": f'SubResource("{sky_mat}")'})
@@ -230,6 +230,30 @@ def add_environment(sc, sun=True, ambient=0.5):
             "directional_shadow_max_distance": "400.0"})
 
 
+def fog_distance(manifest_out, override):
+    """Distance de visibilite (m) : la brume cache les bords de la carte exportee.
+    Auto : 90 % de la distance du centre de la grille detaillee au bord le plus proche de la zone totale."""
+    if override > 0:
+        return override
+    ext = (manifest_out.get("world") or {}).get("exterior") or {}
+    lod = manifest_out.get("lod") or {}
+    cell = lod.get("cell_size_m") or 81.92
+    boxes = []
+    if ext.get("grid"):
+        boxes.append(ext["grid"])
+    boxes += [c["cells"] for c in lod.get("chunks", []) if c.get("cells")]
+    if not boxes:
+        return 0.0
+    x1 = min(b[0] for b in boxes)
+    y1 = min(b[1] for b in boxes)
+    x2 = max(b[2] for b in boxes) + 1
+    y2 = max(b[3] for b in boxes) + 1
+    g = ext.get("grid") or [(x1 + x2 - 1) / 2, (y1 + y2 - 1) / 2] * 2
+    cx, cy = (g[0] + g[2] + 1) / 2, (g[1] + g[3] + 1) / 2
+    edge = min(cx - x1, x2 - cx, cy - y1, y2 - cy) * cell
+    return round(max(edge * 0.9, 150.0), 1)
+
+
 def add_fx_nodes(sc, outdoor):
     """Noeuds de scripts d'effets : post-traitement et sous-marin partout ; cycle jour/nuit et meteo en exterieur."""
     if not FX["on"]:
@@ -243,7 +267,8 @@ def add_fx_nodes(sc, outdoor):
     if outdoor:
         sc.node("DayNight", "Node", ".", props={
             "script": script("daynight"), "sun": 'NodePath("../Sun")',
-            "world_environment": 'NodePath("../WorldEnvironment")'})
+            "world_environment": 'NodePath("../WorldEnvironment")',
+            "view_distance": "@@VIEWDIST@@"})
         sc.node("Weather", "Node3D", ".", props={"script": script("weather")})
 
 
@@ -266,6 +291,50 @@ def find_shader_pack(arg):
         if (p / "Textures").is_dir():
             return p
     return None
+
+
+RM = {"on": False}
+RM_CELL = (2, 8)            # cell du cratere du Mont Ecarlate (x=20848, y=69177)
+
+
+def find_red_mountain(arg):
+    """Dossier du mod "Red Mountain" : --red-mountain, config.json ("red_mountain"), emplacements usuels."""
+    cands = []
+    if arg:
+        cands.append(arg)
+    cfg = Path(__file__).resolve().parent.parent / "config.json"
+    try:
+        v = json.loads(cfg.read_text(encoding="utf-8")).get("red_mountain")
+        if v:
+            cands.append(v)
+    except (OSError, ValueError):
+        pass
+    for d in ("~/Téléchargements", "~/Downloads"):
+        cands.append(f"{d}/Red Mountain")
+    for c in cands:
+        p = Path(c).expanduser()
+        if (p / "textures" / "red-mountain").is_dir():
+            return p
+    return None
+
+
+def install_red_mountain(base, src):
+    """Panache + impostor du Mont Ecarlate : scripts/shaders originaux + textures du mod (copiees ici)."""
+    (base / "scripts").mkdir(parents=True, exist_ok=True)
+    (base / "shaders").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(FX_SRC / "redmountain.gd", base / "scripts" / "redmountain.gd")
+    for f in ("redmountain_plume.gdshader", "redmountain_mountain.gdshader"):
+        shutil.copy2(FX_SRC / f, base / "shaders" / f)
+    dst = base / "fx" / "red-mountain"
+    dst.mkdir(parents=True, exist_ok=True)
+    for f in (src / "textures" / "red-mountain").glob("*.png"):
+        shutil.copy2(f, dst / f.name)
+    bn = src / "textures" / "LDR_RGBA_0.png"
+    if bn.is_file():
+        shutil.copy2(bn, base / "fx" / "redmountain_bluenoise.png")
+    for lic in src.glob("LICEN*"):
+        shutil.copy2(lic, base / "fx" / f"LICENSE-RedMountain-{lic.name}")
+    RM["on"] = True
 
 
 def make_cloud_noise(size=256, seed=7):
@@ -366,7 +435,8 @@ void fragment() {
 	}
 	vec3 n = normalize(vec3(slope, 1.0));
 	NORMAL_MAP = n * 0.5 + 0.5;
-	NORMAL_MAP_DEPTH = 1.0;
+	float far_fade = smoothstep(60.0, 500.0, length(VERTEX));    // ondulations atténuées au loin : pas de scintillement
+	NORMAL_MAP_DEPTH = mix(1.0, 0.12, far_fade);
 
 	// profondeur d'eau sous la surface
 	float d = texture(depth_tex, SCREEN_UV).x;
@@ -383,7 +453,7 @@ void fragment() {
 	float tint = clamp(0.30 + 0.70 * t, 0.0, 1.0);
 	ALBEDO = mix(shallow_color, deep_color, t) * tint;
 	EMISSION = refracted * (1.0 - tint);
-	ROUGHNESS = 0.06;
+	ROUGHNESS = mix(0.06, 0.18, far_fade);
 	METALLIC = 0.0;
 	SPECULAR = 0.6;
 	ALPHA = smoothstep(0.0, 0.2, depth_diff);
@@ -556,6 +626,11 @@ def main():
     ap.add_argument("--name", default="morrowind", help="nom du dossier dans le projet Godot")
     ap.add_argument("--shader-pack", help="dossier de Rafael's Shader Pack (defaut : config.json 'shader_pack', "
                                           "puis ~/Telechargements ou ~/Downloads)")
+    ap.add_argument("--red-mountain", help="dossier du mod Red Mountain (defaut : config.json 'red_mountain', "
+                                           "puis ~/Telechargements ou ~/Downloads)")
+    ap.add_argument("--no-red-mountain", action="store_true", help="pas de panache / impostor du Mont Ecarlate")
+    ap.add_argument("--fog-distance", type=float, default=0.0,
+                    help="distance (m) ou tout disparait dans la brume ; 0 = auto (selon l'etendue exportee)")
     ap.add_argument("--no-fx", action="store_true", help="pas de ciel/meteo/post-traitement (eau et scenes seules)")
     args = ap.parse_args()
 
@@ -576,6 +651,12 @@ def main():
     if not args.no_fx:
         pack = find_shader_pack(args.shader_pack)
         tex = install_fx(base, res, pack)
+        RM["on"] = False
+        if not args.no_red_mountain:
+            rm = find_red_mountain(args.red_mountain)
+            if rm is not None:
+                install_red_mountain(base, rm)
+                print(f"[+] Red Mountain: {rm}")
         print(f"[+] Shader effects: {'Rafael' + chr(39) + 's Shader Pack textures from ' + str(pack) if pack else 'pack not found, generic textures'}"
               f" ({', '.join(sorted(tex))})")
 
@@ -731,6 +812,27 @@ def main():
         world.node("Water", "Node3D", ".")
         cell_m = (manifest_out.get("lod") or {}).get("cell_size_m") or 81.92
         add_cell_water(world, wm, "Water", world_water, cell_m)
+
+    if FX["on"] and RM["on"]:
+        # le vrai volcan est-il dans la scene (grille detaillee ou farlands) ? sinon : impostor
+        gx, gy = RM_CELL
+
+        def covers(b):
+            return b and b[0] <= gx <= b[2] and b[1] <= gy <= b[3]
+        real = covers((manifest_out.get("world") or {}).get("exterior", {}).get("grid")) or any(
+            covers(c.get("cells")) for c in (manifest_out.get("lod") or {}).get("chunks", []))
+        rs = world.ext_resource("Script", f"{res}/scripts/redmountain.gd")
+        world.node("RedMountain", "Node3D", ".", props={
+            "script": f'ExtResource("{rs}")',
+            "show_impostor": "false" if real else "true",
+            "daynight": 'NodePath("../DayNight")'})
+        print(f"[+] Red Mountain at cell {RM_CELL}: {'real terrain in scene, no impostor' if real else 'impostor'}")
+
+    # brume epaisse : cache les bords de la carte exportee (valeur connue seulement maintenant)
+    vd = fog_distance(manifest_out, args.fog_distance)
+    world.nodes = [n.replace("@@VIEWDIST@@", f"{vd}") for n in world.nodes]
+    if FX["on"]:
+        print(f"[+] Fog: everything fades out at {vd:.0f} m" if vd else "[+] Fog: default (no extent known)")
 
     add_camera(world, cam_id, spawn)
     world.write(base / "world.tscn")

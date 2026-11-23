@@ -8,6 +8,7 @@ extends Node
 @export var day_length := 0.0                 # secondes reelles pour 24 h ; 0 = temps fige
 @export var sun_energy := 1.5
 @export var moon_energy := 0.14
+@export var view_distance := 0.0              # m : distance ou tout disparait dans la brume (0 = brume legere par defaut)
 @export var sun: DirectionalLight3D
 @export var world_environment: WorldEnvironment
 @export_range(0.0, 1.0) var overcast := 0.0   # 0 clair .. 1 couvert (pilote par weather.gd)
@@ -76,10 +77,12 @@ func _update() -> void:
 
 	if _env:
 		var horizon := Color(0.015, 0.025, 0.05).lerp(Color(0.58, 0.72, 0.88), day)
+		horizon = horizon.lerp(Color(0.86, 0.93, 1.0), 0.6 * day)          # meme clarte que l'horizon du ciel (pas de silhouette)
 		horizon = horizon.lerp(Color(0.95, 0.55, 0.35), twilight * 0.35)
 		horizon = horizon.lerp(Color(0.5, 0.52, 0.56) * day + Color(0.02, 0.025, 0.04) * (1.0 - day), overcast * 0.7)
 		_env.fog_light_color = horizon
-		_env.fog_density = lerpf(0.00035, 0.0011, overcast)
+		var clear_density := 0.00035 if view_distance <= 0.0 else 3.9 / view_distance   # exp(-d*D) ~ 2 % a view_distance
+		_env.fog_density = lerpf(clear_density, clear_density * 2.2, overcast)
 		_env.ambient_light_energy = lerpf(0.35, 1.0, day)
 		if _env.volumetric_fog_enabled:
 			_env.volumetric_fog_albedo = Color(1.0, 0.85, 0.65).lerp(Color(0.8, 0.85, 1.0), night)
