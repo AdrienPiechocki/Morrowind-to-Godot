@@ -184,7 +184,7 @@ If the *Red Mountain* mod (volcano smoke + distant mountain impostor) is found (
 `config.json`, or `~/Téléchargements/Red Mountain`; `--no-red-mountain` to skip), `world.tscn` gets a `RedMountain` node
 (`redmountain.gd`): a raymarched volumetric **smoke plume** (bent by the wind, lit by the sun, lava glow at the crater) and a
 silhouette **impostor** of the mountain (64 views picked from the camera's compass angle), so the volcano is visible from
-anywhere. Both sit at the real crater position of the map (lowered by `altitude_offset_m` (default −100 m: the volcano is supposed to be very far away, so it sits lower on the horizon; the crater floor is at about −12 m in the terrain data; adjustable at runtime) ) (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
+anywhere. Both sit at the real crater position of the map (lowered by `altitude_offset_m` (default −85 m: the volcano is supposed to be very far away, so it sits lower on the horizon; the crater floor is at about −12 m in the terrain data; adjustable at runtime) ) (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
 z=-691.8`, cell (2, 8)), independently of the exported area. The mountain impostor is fully opaque (no distance fade, no see-through). The impostor is left out automatically when the real
 mountain terrain is in the scene (detailed grid or farlands). The plume is rendered on a full-screen quad (a ray is rebuilt per pixel) and reads the impostor's silhouette mask: the smoke behind the mountain is hidden even where the mountain is semi-transparent. Both are drawn before any window (render priority −2 / −1). Only the mod's textures are copied; shaders and scripts are original.
 
@@ -211,7 +211,7 @@ interiors stored on a high grid, y = 6000 m) and `Levels/Morrowind/` (assets, ef
 
 After the export, re-run Godot's import (`godot --headless --import --path <CyberRealm>/Game/source`).
 
-Other generator-side fixes that benefit every export: structural meshes without a NIF collision node (cave rocks,
+Other generator-side fixes that benefit every export: round rugs get a planar UV mapping on their central fan (in the NIF, each sector of the fan maps the whole texture, which pinches the centre into streaks and makes it flicker with mipmapping); structural meshes without a NIF collision node (cave rocks,
 boulders, ruin walls, pit floors…) get their own geometry as collider; alpha materials (foliage, tapestries) are
 double-sided with a capped alpha cut-off; a texture that has an alpha channel and is used with `BLEND`/`MASK` on some
 meshes but `OPAQUE` on others is made consistent (fixes tapestries and rugs drawn with opaque fringes); the water

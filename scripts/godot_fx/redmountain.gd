@@ -9,7 +9,7 @@ const MW_TO_M := 0.01
 @export var photo_origin_mw := Vector3(20848.0, 68977.0, 11220.0)   # reference des vues de l'impostor
 # Abaisse tout le volcan (montagne + fumee) : il est cense etre tres loin, donc plus bas sur l'horizon. Reglable a chaud
 # (menu pause > Level). Valeur de base du pack : le cratere est a ~123 m ; -12 m correspond au sol du cratere dans les donnees.
-@export var altitude_offset_m := -100.0:
+@export var altitude_offset_m := -85.0:
 	set(v):
 		altitude_offset_m = v
 		_apply_altitude()
