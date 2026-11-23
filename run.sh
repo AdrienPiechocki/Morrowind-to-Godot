@@ -8,6 +8,8 @@ cd "$SCRIPT_DIR"
 #           --blender  (pipeline Blender : seul a gerer les NPCs/creatures ; par defaut conversion directe, sans Blender)
 #           --lod 0|1  (farlands : terrain + gros assets lointains, modes exterior/full)
 #           --lod-radius N  (nombre de cells de farlands autour de la zone detaillee, defaut 16)
+#           --shader-pack DIR  (Rafael's Shader Pack ; defaut : config.json "shader_pack", ~/Telechargements, ~/Downloads)
+#           --no-fx  (pas de ciel/meteo/post-traitement dans la scene Godot)
 #           --godot-name NOM  (dossier du projet Godot genere, defaut "morrowind")
 #           -v | --verbose  (affiche tous les messages des scripts Python et de Blender)
 USER_ANIMS=""
@@ -15,6 +17,8 @@ USER_NPCS=""
 USE_BLENDER=0     # --blender : force le pipeline Blender (NPCs/creatures, animations)
 USER_LOD=""       # --lod 0|1 : farlands (modes exterior/full)
 LOD_RADIUS=""     # --lod-radius N : cells de farlands autour de la zone detaillee
+SHADER_PACK=""    # --shader-pack DIR : Rafael's Shader Pack (textures du ciel/lunes) ; --no-fx : sans effets
+NO_FX=0
 GODOT_NAME="morrowind"   # --godot-name : nom du dossier dans le projet Godot
 VFLAG=""          # "--verbose" transmis aux scripts Python (vide = barre de progression seule)
 while [ $# -gt 0 ]; do
@@ -32,6 +36,10 @@ while [ $# -gt 0 ]; do
         --lod-radius) [ $# -ge 2 ] || { echo "[ERROR] --lod-radius attend un nombre de cells"; exit 1; }
                    LOD_RADIUS="$2"; shift 2 ;;
         --lod-radius=*) LOD_RADIUS="${1#--lod-radius=}"; shift ;;
+        --shader-pack) [ $# -ge 2 ] || { echo "[ERROR] --shader-pack attend un dossier"; exit 1; }
+                   SHADER_PACK="$2"; shift 2 ;;
+        --shader-pack=*) SHADER_PACK="${1#--shader-pack=}"; shift ;;
+        --no-fx)   NO_FX=1; shift ;;
         --godot-name) [ $# -ge 2 ] || { echo "[ERROR] --godot-name attend un nom"; exit 1; }
                    GODOT_NAME="$2"; shift 2 ;;
         --godot-name=*) GODOT_NAME="${1#--godot-name=}"; shift ;;
@@ -669,6 +677,8 @@ fi
 step 9 "Godot project folder"
 GODOT_DIR="$SCRIPT_DIR/godot_export"
 GODOT_ARGS=(--out "$GODOT_DIR" --name "$GODOT_NAME")
+[ -n "$SHADER_PACK" ] && GODOT_ARGS+=(--shader-pack "$SHADER_PACK")
+[ "$NO_FX" = "1" ] && GODOT_ARGS+=(--no-fx)
 
 if [ "$WITH_LOD" = "1" ]; then
     # Zone des farlands = zone detaillee elargie de LOD_RADIUS cells (le trou reste sur la zone detaillee)

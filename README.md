@@ -144,6 +144,11 @@ godot_export/
 ```
 
 - Scene paths are `res://morrowind/...`: use `./run.sh --godot-name NAME` if you want another folder name.
+- The terrain has a trimesh collider (`Terrain_x_y-colonly` nodes, like the other collisions); farlands have none.
+- Water is a Godot shader (`shaders/water.gdshader`) applied to one plane per water cell (exterior and farlands,
+  `Water` node of `world.tscn`) and one per flooded interior: depth-based green/blue tint, animated ripples,
+  sky/sun reflections, refraction, soft shoreline. It needs the **Forward+ or Mobile** renderer (screen and
+  depth textures); in *Compatibility* mode it is nearly invisible. Tweak the colours in the material.
 - Doors are `Marker3D` nodes with metadata (`target_scene`, `arrival_position`, `arrival_yaw`):
   no gameplay is generated, plug your own door logic on them.
 - `--lod 1` (or answer `y` in `exterior` / `full` modes) also generates the farlands: the cells within
@@ -151,6 +156,27 @@ godot_export/
   detailed grid (no z-fighting). To tune the farlands, run `./run_lod.sh` separately, then
   `python3 scripts/build_godot.py --help`.
 - Godot imports the glTF files the first time you open the project (can take a while).
+
+### Shader effects (Rafael's Shader Pack)
+
+If Rafael's Shader Pack is installed (`--shader-pack DIR`, `"shader_pack"` in
+`config.json`, or `~/Téléchargements` / `~/Downloads`), `godot_export/` also gets Godot equivalents of its OpenMW
+post-processing shaders (`--no-fx` to skip them). They are **original Godot code**, not ports of the GPL-3 GLSL:
+only the pack's *textures* (stars, moons, ripples) are copied, with its licence, into `morrowind/fx/`.
+
+| Pack shader | In Godot |
+|---|---|
+| VAIO (sky, clouds, stars, moons, fog) | `sky.gdshader` + `daynight.gd`: day/night cycle, Masser and Secunda with phases, Milky Way, clouds, atmospheric fog (`T` run/stop time, `[` `]` ±1 h) |
+| tonemap (filmic + bloom) | `Environment`: filmic tonemap, glow, contrast/saturation |
+| HBAO | `Environment`: SSAO |
+| godrays | `Environment`: volumetric fog lit by the sun |
+| SMAA / SMB (temporal filtering) | `postfx.gd`: SMAA, optional TAA (no motion blur in Godot) |
+| DIVE (underwater) | `underwater.gdshader` + `underwater.gd`: tint, absorption, caustics, light rays, plankton, below any water plane |
+| wetworld (rain) | `weather.gd`: rain particles, overcast sky, ripples on water (`R` toggles). Puddles / wet surfaces are not ported |
+
+AdvancedDebugger is a debug tool and was not ported. Everything is tweakable on the scene nodes (`DayNight`,
+`Weather`, `PostFX`, `Underwater`) and in the `WorldEnvironment`. It needs Forward+ (SSAO, volumetric fog,
+screen/depth textures).
 
 ## Farlands / LODs
 

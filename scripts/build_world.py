@@ -107,7 +107,10 @@ def build_exterior(task):
                                    "OPAQUE", 0.5, False, (1, 1, 1, 1))
             uvg = np.stack([uv[:, 0], 1.0 - uv[:, 1]], axis=-1).astype(np.float32)
             prim = builder.primitive(pos - origin, nrm, uvg, col, tris, mat)
-            builder.add_node(builder.add_mesh(f"Terrain_{gx}_{gy}", [prim]), f"Terrain_{gx}_{gy}")
+            tmesh = builder.add_mesh(f"Terrain_{gx}_{gy}", [prim])
+            builder.add_node(tmesh, f"Terrain_{gx}_{gy}")
+            # meme mesh en collision : Godot en fait un StaticBody3D (suffixe -colonly, comme les decors)
+            builder.add_node(tmesh, f"Terrain_{gx}_{gy}-colonly")
         placed += place_refs(builder, refs, origin, needed, mesh_ids)
     builder.write(os.path.join(outdir, "exterior"))
     return "exterior", placed, needed, sorted(G["missing"])
@@ -256,7 +259,9 @@ def main():
                 if (gx, gy) in ext_cells or (gx, gy) in landscape:
                     cells.append((gx, gy, cell_refs(ext_cells.get((gx, gy)))))
         print(f"[+] Exterior grid {grid}: {len(cells)} cell(s)", file=sys.stderr, flush=True)
-        manifest["exterior"] = {"file": "exterior", "grid": list(grid), "origin_mw": rnd(origin, 2)}
+        manifest["exterior"] = {"file": "exterior", "grid": list(grid), "origin_mw": rnd(origin, 2),
+                                "water": [[gx, gy, L.cell_water_level(ext_cells.get((gx, gy)))]
+                                          for gx, gy, _ in cells if L.cell_has_water(ext_cells.get((gx, gy)))]}
         # le decor est decoupe en lots pour paralleliser quand la grille est grande ; ici un seul fichier
         _, n_ext, need, miss = _run(build_exterior, [(origin, cells)], 1, "Exterior")[0]
         needed.update(need)
@@ -290,8 +295,15 @@ def main():
         stem = safe_stem(name, used)
         origins[key] = arrival
         cell = int_cells[key]
-        interior_tasks.append((stem, arrival, cell_refs(cell)))
-        entries[key] = {"name": name, "file": f"interiors/{stem}", "depth": depth, "doors": [{
+        irefs = cell_refs(cell)
+        interior_tasks.append((stem, arrival, irefs))
+        water = None
+        if L.cell_has_water(cell) and irefs:
+            pts = np.array([r[1][:2] for r in irefs], dtype=np.float64) - arrival[:2]
+            lo, hi = pts.min(axis=0) * mwgltf.SCALE - 20.0, pts.max(axis=0) * mwgltf.SCALE + 20.0
+            water = {"level": round((L.cell_water_level(cell, meters=False) - arrival[2]) * mwgltf.SCALE, 4),
+                     "bounds": rnd([lo[0], lo[1], hi[0], hi[1]], 2)}
+        entries[key] = {"name": name, "file": f"interiors/{stem}", "depth": depth, "water": water, "doors": [{
             "from": parent, "door_id": door_ref.get("id"), "door_position": rnd(door_pos),
             "arrival_position": [0.0, 0.0, 0.0],
             "arrival_rotation": rnd(dest.get("rotation") or [0, 0, 0])}]}

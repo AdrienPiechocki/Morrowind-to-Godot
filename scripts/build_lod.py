@@ -60,6 +60,19 @@ def cell_is_interior(cell):
     return "INTERIOR" in str(flags).upper()
 
 
+def cell_has_water(cell):
+    """Cell exterieure sans record (terrain seul) : eau par defaut, comme dans le jeu."""
+    if cell is None:
+        return True
+    return "HAS_WATER" in str((cell.get("data") or {}).get("flags")).upper()
+
+
+def cell_water_level(cell, meters=True):
+    wh = (cell or {}).get("water_height")
+    wh = float(wh) if wh is not None else 0.0
+    return round(wh * 0.01, 4) if meters else wh
+
+
 def script_disabled_ids(data):
     pat = re.compile(r'(?:"([^"]+)"|([\w]+))\s*->\s*(?:Disable|SetDelete)\b', re.I)
     out = set()
@@ -180,6 +193,8 @@ def build_chunk(task):
     gys = [gy for _, gy, _ in cells]
     return {"name": stem, "file": stem + ".gltf", "chunk": [cx, cy],
             "cells": [min(gxs), min(gys), max(gxs), max(gys)], "assets": placed,
+            "water": [[gx, gy, cell_water_level(G["cells"].get((gx, gy)))] for gx, gy, _ in cells
+                      if cell_has_water(G["cells"].get((gx, gy)))],
             "terrain_cells": len(land_cells), "seconds": round(time.time() - t0, 1),
             "missing_textures": sorted(G["missing"])}, needed
 
@@ -248,6 +263,7 @@ def main():
             g = (r.get("data") or {}).get("grid") or [0, 0]
             cells[(int(g[0]), int(g[1]))] = r             # le dernier plugin gagne
     del data
+    cells_by_grid = cells
 
     chunks = {}
     keys = set(cells) | set(landscape)
@@ -275,7 +291,7 @@ def main():
 
     G.update(chunk=a.chunk, terrain_step=a.terrain_step, tile_px=max(a.tex_px // 16, 1),
              min_size=a.min_size, tex_side=a.tex_max_side, outdir=outdir, chunks=chunks,
-             landscape=landscape, records=records, mesh_index=mesh_index, tex_index=tex_index,
+             landscape=landscape, records=records, cells=cells_by_grid, mesh_index=mesh_index, tex_index=tex_index,
              land_tex=mwterrain.LandTextures(ltex, tex_index, max(a.tex_px // 16, 1)), models={})
 
     order = sorted(chunks, key=lambda k: (k[1], k[0]))

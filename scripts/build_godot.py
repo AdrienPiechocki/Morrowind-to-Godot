@@ -112,7 +112,7 @@ class Scene:
         self.subs.append(f'[sub_resource type="{rtype}" id="{sid}"]\n{body}')
         return sid
 
-    def node(self, name, ntype=None, parent=None, instance=None, props=None, meta=None):
+    def node(self, name, ntype=None, parent=None, instance=None, props=None, meta=None, groups=None):
         head = f'[node name="{name}"'
         if ntype:
             head += f' type="{ntype}"'
@@ -120,6 +120,8 @@ class Scene:
             head += f' parent="{parent}"'
         if instance is not None:
             head += f' instance=ExtResource("{instance}")'
+        if groups:
+            head += " groups=[" + ", ".join(f'"{g}"' for g in groups) + "]"
         head += "]\n"
         body = "".join(f"{k} = {v}\n" for k, v in (props or {}).items())
         body += "".join(f"metadata/{k} = {v}\n" for k, v in (meta or {}).items())
@@ -144,10 +146,61 @@ def string(s):
 # Environnement commun
 # ------------------------------------------------------------------
 
+FX_SRC = Path(__file__).resolve().parent / "godot_fx"
+FX = {"on": False, "res": "", "tex": {}}      # effets (equivalents de Rafael's Shader Pack)
+
+
+def fx_env_props(sun):
+    """Reglages d'Environment : tonemap filmique + bloom (tonemap.omwfx), SSAO (HBAO), brouillard
+    volumetrique (godrays), brouillard atmospherique. Valeurs de depart tirees des defauts du pack."""
+    p = {
+        "tonemap_mode": "2",                       # filmique
+        "tonemap_exposure": "1.0",
+        "glow_enabled": "true",                    # bloom
+        "glow_intensity": "0.45",
+        "glow_bloom": "0.04",
+        "glow_hdr_threshold": "0.85",
+        "adjustment_enabled": "true",              # "special contrast / saturation"
+        "adjustment_contrast": "1.07",
+        "adjustment_saturation": "1.10",
+        "ssao_enabled": "true",                    # HBAO / GTAO
+        "ssao_radius": "2.2",
+        "ssao_intensity": "1.4",
+        "ssao_power": "1.6",
+        "ssao_detail": "0.6",
+        "ssao_light_affect": "0.15",
+    }
+    if sun:
+        p.update({
+            "volumetric_fog_enabled": "true",      # rayons de soleil (godrays)
+            "volumetric_fog_density": "0.0006",
+            "volumetric_fog_albedo": "Color(1, 0.85, 0.65, 1)",
+            "volumetric_fog_anisotropy": "0.75",
+            "volumetric_fog_length": "220.0",
+            "volumetric_fog_sky_affect": "0.0",
+            "fog_aerial_perspective": "0.25",
+            "fog_sky_affect": "0.35",
+        })
+    return p
+
+
 def add_environment(sc, sun=True, ambient=0.5):
-    sky_mat = sc.sub("ProceduralSkyMaterial", {})
-    sky = sc.sub("Sky", {"sky_material": f'SubResource("{sky_mat}")'})
-    env = sc.sub("Environment", {
+    if FX["on"] and sun:
+        res = FX["res"]
+        sh = sc.ext_resource("Shader", f"{res}/shaders/sky.gdshader")
+        params = {"shader": f'ExtResource("{sh}")'}
+        for pname, key in (("cloud_noise", "perlin2d"), ("star_map", "starmap"),
+                           ("masser_tex", "masser"), ("secunda_tex", "secunda")):
+            if key in FX["tex"]:
+                t = sc.ext_resource("Texture2D", f"{res}/fx/{FX['tex'][key]}")
+                params[f"shader_parameter/{pname}"] = f'ExtResource("{t}")'
+        sky_mat = sc.sub("ShaderMaterial", params)
+        sky = sc.sub("Sky", {"sky_material": f'SubResource("{sky_mat}")', "process_mode": "3",
+                             "radiance_size": "2"})
+    else:
+        sky_mat = sc.sub("ProceduralSkyMaterial", {})
+        sky = sc.sub("Sky", {"sky_material": f'SubResource("{sky_mat}")'})
+    props = {
         "background_mode": "2",
         "sky": f'SubResource("{sky}")',
         "ambient_light_source": "3" if sun else "2",
@@ -157,7 +210,10 @@ def add_environment(sc, sun=True, ambient=0.5):
         "fog_enabled": "true" if sun else "false",
         "fog_light_color": "Color(0.62, 0.68, 0.76, 1)",
         "fog_density": "0.0003",
-    })
+    }
+    if FX["on"]:
+        props.update(fx_env_props(sun))
+    env = sc.sub("Environment", props)
     sc.node("WorldEnvironment", "WorldEnvironment", ".", props={"environment": f'SubResource("{env}")'})
     if sun:
         # inclinaison du soleil : rotation X de -50 deg puis yaw
@@ -172,6 +228,230 @@ def add_environment(sc, sun=True, ambient=0.5):
         sc.node("Sun", "DirectionalLight3D", ".", props={
             "transform": rot, "shadow_enabled": "true",
             "directional_shadow_max_distance": "400.0"})
+
+
+def add_fx_nodes(sc, outdoor):
+    """Noeuds de scripts d'effets : post-traitement et sous-marin partout ; cycle jour/nuit et meteo en exterieur."""
+    if not FX["on"]:
+        return
+    res = FX["res"]
+
+    def script(name):
+        return f'ExtResource("{sc.ext_resource("Script", f"{res}/scripts/{name}.gd")}")'
+    sc.node("PostFX", "Node", ".", props={"script": script("postfx")})
+    sc.node("Underwater", "Node", ".", props={"script": script("underwater")})
+    if outdoor:
+        sc.node("DayNight", "Node", ".", props={
+            "script": script("daynight"), "sun": 'NodePath("../Sun")',
+            "world_environment": 'NodePath("../WorldEnvironment")'})
+        sc.node("Weather", "Node3D", ".", props={"script": script("weather")})
+
+
+def find_shader_pack(arg):
+    """Dossier de Rafael's Shader Pack : --shader-pack, config.json ("shader_pack"), puis emplacements usuels."""
+    cands = []
+    if arg:
+        cands.append(arg)
+    cfg = Path(__file__).resolve().parent.parent / "config.json"
+    try:
+        v = json.loads(cfg.read_text(encoding="utf-8")).get("shader_pack")
+        if v:
+            cands.append(v)
+    except (OSError, ValueError):
+        pass
+    for d in ("~/Téléchargements", "~/Downloads"):
+        cands.append(f"{d}/RafaelsShaderPack")
+    for c in cands:
+        p = Path(c).expanduser()
+        if (p / "Textures").is_dir():
+            return p
+    return None
+
+
+def make_cloud_noise(size=256, seed=7):
+    """Bruit nuageux sans raccord (repli si le pack n'est pas installe)."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    f = np.fft.fft2(rng.standard_normal((size, size)))
+    fy = np.fft.fftfreq(size)[:, None]
+    fx = np.fft.fftfreq(size)[None, :]
+    r = np.sqrt(fx * fx + fy * fy)
+    f *= 1.0 / (r + 0.01) ** 1.6
+    h = np.real(np.fft.ifft2(f))
+    h = (h - h.min()) / (h.max() - h.min())
+    return (h * 255).astype(np.uint8)
+
+
+def install_fx(base, res, pack):
+    """Copie scripts/shaders d'effets et textures du pack (si present) dans le dossier genere."""
+    from PIL import Image
+    (base / "scripts").mkdir(parents=True, exist_ok=True)
+    (base / "shaders").mkdir(parents=True, exist_ok=True)
+    (base / "fx").mkdir(parents=True, exist_ok=True)
+    for f in ("daynight.gd", "underwater.gd", "weather.gd", "postfx.gd"):
+        shutil.copy2(FX_SRC / f, base / "scripts" / f)
+    for f in ("sky.gdshader", "underwater.gdshader"):
+        shutil.copy2(FX_SRC / f, base / "shaders" / f)
+    tex = {}
+    if pack is not None:
+        T = pack / "Textures"
+
+        def put(src, key, dst=None, convert=False):
+            p = T / src
+            if not p.is_file():
+                return
+            dst = dst or src
+            if convert:
+                Image.open(p).convert("RGBA").save(base / "fx" / dst)
+            else:
+                shutil.copy2(p, base / "fx" / dst)
+            tex[key] = dst
+        put("perlin2d.png", "perlin2d")
+        put("vaiostarmap.png", "starmap")
+        put("vaiomoonmasser.jpg", "masser")
+        put("vaiomoonsecunda.jpg", "secunda")
+        put("ripples.dds", "ripples", "ripples.png", convert=True)
+        lic = pack / "LICENSE"
+        if lic.is_file():
+            shutil.copy2(lic, base / "fx" / "LICENSE-RafaelsShaderPack.txt")
+        (base / "fx" / "README.txt").write_text(
+            "Textures copied from Rafael's Shader Pack (GPL-3.0, see LICENSE-RafaelsShaderPack.txt).\n"
+            "The shaders/scripts of this folder are original Godot equivalents of its effects.\n",
+            encoding="utf-8")
+    if "perlin2d" not in tex:
+        Image.fromarray(make_cloud_noise(), "L").save(base / "fx" / "perlin2d.png")
+        tex["perlin2d"] = "perlin2d.png"
+    FX.update(on=True, res=res, tex=tex)
+    return tex
+
+
+WATER_SHADER = """shader_type spatial;
+// Eau facon OpenMW : teinte verte/bleue selon la profondeur, ondulations animees (deux normal maps),
+// reflets du ciel / du soleil (PBR), refraction du fond, bord de rive adouci.
+render_mode depth_draw_always, cull_disabled, specular_schlick_ggx;
+
+uniform vec3 shallow_color : source_color = vec3(0.24, 0.44, 0.42);
+uniform vec3 deep_color : source_color = vec3(0.03, 0.14, 0.17);
+uniform float clarity = 6.0;              // metres avant la teinte "profonde"
+uniform float refraction_strength = 0.03;
+uniform float ripple_scale = 0.05;        // frequence des ondulations (par metre)
+uniform float flow_speed = 1.0;
+uniform sampler2D normal_a : hint_normal, repeat_enable, filter_linear_mipmap;
+uniform sampler2D normal_b : hint_normal, repeat_enable, filter_linear_mipmap;
+uniform sampler2D screen_tex : hint_screen_texture, repeat_disable, filter_linear_mipmap;
+uniform sampler2D depth_tex : hint_depth_texture, repeat_disable, filter_nearest;
+uniform sampler2D ripple_tex : repeat_enable, filter_linear_mipmap, hint_default_black;
+uniform float rain_intensity : hint_range(0.0, 1.0) = 0.0;   // pilote par weather.gd
+
+varying vec3 world_pos;
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+void fragment() {
+	float t_ = TIME * flow_speed;
+	vec2 uv_a = world_pos.xz * ripple_scale + vec2(t_ * 0.015, t_ * 0.010);
+	vec2 uv_b = world_pos.xz * ripple_scale * 2.3 + vec2(-t_ * 0.020, t_ * 0.012);
+	vec3 na = texture(normal_a, uv_a).xyz * 2.0 - 1.0;
+	vec3 nb = texture(normal_b, uv_b).xyz * 2.0 - 1.0;
+	vec2 slope = na.xy + nb.xy * 0.6;
+	if (rain_intensity > 0.01) {
+		// gouttes : normales de "bulles" animees (texture de ripples), deux couches dephasees
+		for (int i = 0; i < 2; i++) {
+			float ph = fract(t_ * (0.9 + 0.3 * float(i)) + 0.5 * float(i));
+			vec4 r = texture(ripple_tex, world_pos.xz * (0.45 + 0.17 * float(i)) + vec2(float(i) * 0.37, float(i) * 0.61));
+			slope += (r.rg * 2.0 - 1.0) * r.a * sin(ph * 3.14159) * rain_intensity * 1.4;
+		}
+	}
+	vec3 n = normalize(vec3(slope, 1.0));
+	NORMAL_MAP = n * 0.5 + 0.5;
+	NORMAL_MAP_DEPTH = 1.0;
+
+	// profondeur d'eau sous la surface
+	float d = texture(depth_tex, SCREEN_UV).x;
+	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, d);
+	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+	view.xyz /= view.w;
+	float depth_diff = max(-view.z + VERTEX.z, 0.0);
+	float t = 1.0 - exp(-depth_diff / clarity);
+
+	// fond refracte (attenue pres du bord pour eviter les artefacts)
+	vec2 offset = n.xy * refraction_strength * clamp(depth_diff, 0.0, 1.0);
+	vec3 refracted = textureLod(screen_tex, SCREEN_UV + offset, 0.0).rgb;
+
+	float tint = clamp(0.30 + 0.70 * t, 0.0, 1.0);
+	ALBEDO = mix(shallow_color, deep_color, t) * tint;
+	EMISSION = refracted * (1.0 - tint);
+	ROUGHNESS = 0.06;
+	METALLIC = 0.0;
+	SPECULAR = 0.6;
+	ALPHA = smoothstep(0.0, 0.2, depth_diff);
+}
+"""
+
+
+def make_normal_map(seed, size=256, strength=3.0, cutoff=0.18):
+    """Normal map ondulee et sans raccord (bruit filtre dans l'espace de Fourier)."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    f = np.fft.fft2(rng.standard_normal((size, size)))
+    fy = np.fft.fftfreq(size)[:, None]
+    fx = np.fft.fftfreq(size)[None, :]
+    r = np.sqrt(fx * fx + fy * fy)
+    f *= np.exp(-(r / cutoff) ** 2) / (r + 0.02)           # passe-bas, plus d'energie aux grandes ondes
+    h = np.real(np.fft.ifft2(f))
+    h = (h - h.mean()) / (h.std() + 1e-9)
+    dx = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) * 0.5
+    dy = (np.roll(h, -1, axis=0) - np.roll(h, 1, axis=0)) * 0.5
+    n = np.stack([-dx * strength, -dy * strength, np.ones_like(h)], axis=-1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    return ((n * 0.5 + 0.5) * 255 + 0.5).astype(np.uint8)
+
+
+def write_water_assets(base):
+    """shaders/water.gdshader + textures/water_nm_{a,b}.png dans le dossier genere."""
+    from PIL import Image
+    (base / "shaders").mkdir(parents=True, exist_ok=True)
+    (base / "shaders" / "water.gdshader").write_text(WATER_SHADER, encoding="utf-8")
+    (base / "textures").mkdir(parents=True, exist_ok=True)
+    Image.fromarray(make_normal_map(1, strength=1.5, cutoff=0.09), "RGB").save(base / "textures" / "water_nm_a.png")
+    Image.fromarray(make_normal_map(2, size=256, strength=1.8, cutoff=0.13), "RGB").save(
+        base / "textures" / "water_nm_b.png")
+
+
+def water_material(sc, res):
+    """Sous-ressource ShaderMaterial de l'eau (les scenes partagent les memes fichiers)."""
+    sh = sc.ext_resource("Shader", f"{res}/shaders/water.gdshader")
+    na = sc.ext_resource("Texture2D", f"{res}/textures/water_nm_a.png")
+    nb = sc.ext_resource("Texture2D", f"{res}/textures/water_nm_b.png")
+    params = {
+        "shader": f'ExtResource("{sh}")',
+        "shader_parameter/normal_a": f'ExtResource("{na}")',
+        "shader_parameter/normal_b": f'ExtResource("{nb}")'}
+    if FX["on"] and "ripples" in FX["tex"]:
+        rt = sc.ext_resource("Texture2D", f"{res}/fx/{FX['tex']['ripples']}")
+        params["shader_parameter/ripple_tex"] = f'ExtResource("{rt}")'
+    return sc.sub("ShaderMaterial", params)
+
+
+def add_water_plane(sc, mat_id, name, parent, center, size):
+    """Plan d'eau : center = (x, y, z) Godot, size = (largeur x, profondeur z) en metres."""
+    plane = sc.sub("PlaneMesh", {"size": f"Vector2({num(size[0], 3)}, {num(size[1], 3)})",
+                                 "material": f'SubResource("{mat_id}")'})
+    sc.node(name, "MeshInstance3D", parent, props={
+        "transform": transform(center), "mesh": f'SubResource("{plane}")', "cast_shadow": "0"},
+        groups=["water"])
+
+
+def add_cell_water(sc, mat_id, parent, cells, cell_size):
+    """cells : [[gx, gy, niveau_m]] ; un seul PlaneMesh partage par toutes les cells."""
+    plane = sc.sub("PlaneMesh", {"size": f"Vector2({num(cell_size, 3)}, {num(cell_size, 3)})",
+                                 "material": f'SubResource("{mat_id}")'})
+    for gx, gy, level in cells:
+        sc.node(f"W_{gx}_{gy}".replace("-", "m"), "MeshInstance3D", parent, props={
+            "transform": transform(((gx + 0.5) * cell_size, level, -(gy + 0.5) * cell_size)),
+            "mesh": f'SubResource("{plane}")', "cast_shadow": "0"}, groups=["water"])
 
 
 def add_camera(sc, cam_script_id, pos, far=20000.0):
@@ -236,6 +516,7 @@ def build_interior_scene(sc_path, res, stem, model_res, entry, doors_out, cam_id
     cam_id = sc.ext_resource("Script", cam_id_path)
     sc.node(node_name(entry["name"], set()), "Node3D")
     add_environment(sc, sun=False)
+    add_fx_nodes(sc, False)
     sc.node("Model", None, ".", instance=model_id)
     used = set()
     sc.node("Arrivals", "Node3D", ".")
@@ -253,6 +534,13 @@ def build_interior_scene(sc_path, res, stem, model_res, entry, doors_out, cam_id
         for d in doors_out:
             sc.node(node_name(d["name"], used), "Marker3D", "Doors",
                     props={"transform": transform(to_godot(d["pos"]))}, meta=d["meta"])
+    water = entry.get("water")
+    if water:
+        wm = water_material(sc, res)
+        sc.node("Water", "Node3D", ".")
+        x0, y0, x1, y1 = water["bounds"]
+        add_water_plane(sc, wm, "WaterSurface", "Water",
+                        ((x0 + x1) / 2, water["level"], -(y0 + y1) / 2), (x1 - x0, y1 - y0))
     add_camera(sc, cam_id, (first[0], first[1] + 1.7, first[2]) if first else (0, 2, 0), far=2000.0)
     sc.write(sc_path)
 
@@ -266,6 +554,9 @@ def main():
     ap.add_argument("--lod", help="dossier export_lod/")
     ap.add_argument("--out", default="godot_export")
     ap.add_argument("--name", default="morrowind", help="nom du dossier dans le projet Godot")
+    ap.add_argument("--shader-pack", help="dossier de Rafael's Shader Pack (defaut : config.json 'shader_pack', "
+                                          "puis ~/Telechargements ou ~/Downloads)")
+    ap.add_argument("--no-fx", action="store_true", help="pas de ciel/meteo/post-traitement (eau et scenes seules)")
     args = ap.parse_args()
 
     if not (args.export or args.single or args.lod):
@@ -280,15 +571,24 @@ def main():
     (base / "scripts").mkdir(parents=True)
     (base / "scripts" / "fly_cam.gd").write_text(FLY_CAM, encoding="utf-8")
     cam_script = f"{res}/scripts/fly_cam.gd"
+    write_water_assets(base)
+    FX["on"] = False
+    if not args.no_fx:
+        pack = find_shader_pack(args.shader_pack)
+        tex = install_fx(base, res, pack)
+        print(f"[+] Shader effects: {'Rafael' + chr(39) + 's Shader Pack textures from ' + str(pack) if pack else 'pack not found, generic textures'}"
+              f" ({', '.join(sorted(tex))})")
 
     world = Scene()
     cam_id = world.ext_resource("Script", cam_script)
     world.node("World", "Node3D")
     add_environment(world, sun=True)
+    add_fx_nodes(world, True)
     spawn = (0.0, 50.0, 0.0)
     manifest_out = {}
 
     # ---------- Exterieur / modele du monde ----------
+    world_water = []          # [[gx, gy, niveau_m]] : exterieur + farlands
     ext_gltf = None
     interiors_info = []
     if args.export:
@@ -309,6 +609,7 @@ def main():
             mid = world.ext_resource("PackedScene", f"{res}/{rel}")
             world.node("ExteriorRoot", "Node3D", ".", props={"transform": transform(ext_pos)})
             world.node("Exterior", None, "ExteriorRoot", instance=mid)
+            world_water.extend((manifest.get("exterior") or {}).get("water") or [])
             grid = (manifest.get("exterior") or {}).get("grid")
             if grid:
                 spawn = (ext_pos[0] , 60.0, ext_pos[2])
@@ -414,6 +715,7 @@ def main():
             fid = far.ext_resource("PackedScene", f"{res}/{g.relative_to(base).as_posix()}")
             far.node(node_name(c["name"], used), None, ".", instance=fid)
             lod_chunks += 1
+            world_water.extend(c.get("water") or [])
         far.write(base / "farlands.tscn")
         if lod_chunks:
             fid = world.ext_resource("PackedScene", f"{res}/farlands.tscn")
@@ -423,6 +725,12 @@ def main():
                 cs = lman.get("cell_size_m", 81.92)
                 x1, y1, x2, y2 = c0["cells"]
                 spawn = ((x1 + x2 + 1) / 2 * cs, 400.0, -(y1 + y2 + 1) / 2 * cs)
+
+    if world_water:
+        wm = water_material(world, res)
+        world.node("Water", "Node3D", ".")
+        cell_m = (manifest_out.get("lod") or {}).get("cell_size_m") or 81.92
+        add_cell_water(world, wm, "Water", world_water, cell_m)
 
     add_camera(world, cam_id, spawn)
     world.write(base / "world.tscn")
