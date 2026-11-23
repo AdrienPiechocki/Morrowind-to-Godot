@@ -166,13 +166,13 @@ only the pack's *textures* (stars, moons, ripples) are copied, with its licence,
 
 | Pack shader | In Godot |
 |---|---|
-| VAIO (sky, clouds, stars, moons, fog) | `sky.gdshader` + `daynight.gd`: day/night cycle, Masser and Secunda (orbiting around Masser) with phases, Milky Way, clouds, atmospheric fog (`T` run/stop time, `[` `]` ±1 h) |
+| VAIO (sky, clouds, stars, moons, fog) | `sky.gdshader` + `daynight.gd`: day/night cycle that follows the **local clock** by default (`DayNight.real_time`; otherwise `time_of_day` / `day_length`), Masser and Secunda (orbiting around Masser) with phases, Milky Way (star map sampled with two orientations so it is never stretched at a pole), adjustable `cloud_density`, atmospheric fog (thick at dawn and lifting through the morning in real-time mode; `fog_thickness` sets it with a fixed hour). `sun_glare.gd`: the sun's halo, drawn after the windows. No keyboard shortcuts: everything is exposed as node properties |
 | tonemap (filmic + bloom) | `Environment`: filmic tonemap, glow, contrast/saturation |
 | HBAO | `Environment`: SSAO |
 | godrays | `Environment`: volumetric fog lit by the sun |
 | SMAA / SMB (temporal filtering) | `postfx.gd`: SMAA, optional TAA (no motion blur in Godot) |
 | DIVE (underwater) | `underwater.gdshader` + `underwater.gd`: tint, absorption, caustics, light rays, plankton, below any water plane |
-| wetworld (rain) | `weather.gd`: rain streaks aligned with the drops' real 3D trajectory (they converge in perspective when you look up or down), overcast sky, ripples on water (`R` toggles). Puddles / wet surfaces are not ported |
+| wetworld (rain) | `weather.gd`: rain streaks aligned with the drops' real 3D trajectory (they converge in perspective when you look up or down), overcast sky, ripples on water (`Weather.raining`). Puddles / wet surfaces are not ported |
 
 AdvancedDebugger is a debug tool and was not ported. Everything is tweakable on the scene nodes (`DayNight`,
 `Weather`, `PostFX`, `Underwater`) and in the `WorldEnvironment`. It needs Forward+ (SSAO, volumetric fog,
@@ -186,12 +186,36 @@ If the *Red Mountain* mod (volcano smoke + distant mountain impostor) is found (
 silhouette **impostor** of the mountain (64 views picked from the camera's compass angle), so the volcano is visible from
 anywhere. Both sit at the real crater position of the map (lowered by `altitude_offset_m` = −12 m, which matches the crater floor in the terrain data) (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
 z=-691.8`, cell (2, 8)), independently of the exported area. The impostor is left out automatically when the real
-mountain terrain is in the scene (detailed grid or farlands). The impostor is drawn opaque **over** the plume (render priority), so the smoke comes out from behind the summit. Only the mod's textures are copied; shaders and scripts are original.
+mountain terrain is in the scene (detailed grid or farlands). The plume is rendered on a full-screen quad (a ray is rebuilt per pixel) and reads the impostor's silhouette mask: the smoke behind the mountain is hidden even where the mountain is semi-transparent. Both are drawn before any window (render priority −2 / −1). Only the mod's textures are copied; shaders and scripts are original.
 
 **Fog.** The world fog is sized to the exported extent (`DayNight.view_distance`, 90 % of the distance from the detailed grid to the nearest
 edge of the exported area, 150 m minimum) so the edges of the map are never visible. Override it with `./run.sh --fog-distance METERS`.
 The volcano has its own, lighter haze, and fades out with distance (`RedMountain.fade_start_m` / `fade_end_m`, 1.5 km → 7 km by default).
 The smoke gets the same atmospheric veil as the mountain (`haze_floor`) and its base is sunk 30 m under the crater rim (`base_sink_m`).
+
+### Export for CyberRealm
+
+`./run.sh --cyberrealm <CyberRealm>/Game/source/user` (or, afterwards,
+`python3 scripts/cyberrealm_export.py --dest <CyberRealm>/Game/source/user`) adapts `godot_export/morrowind` to the
+CyberRealm game: it writes `level.tscn` (world + player + the 80
+interiors stored on a high grid, y = 6000 m) and `Levels/Morrowind/` (assets, effect scripts, the game scripts of
+`scripts/cyberrealm/`, cleaned interior scenes). The game scripts provide:
+
+- **doors** (`interiors.gd`, `door.gd`): the door *meshes* are clickable; entering/leaving teleports the local
+  player only (multiplayer-safe); missing structural colliders and double-sided foliage are also fixed at runtime;
+  the outdoor world is hidden from the camera inside an interior (it used to show through the cracks between meshes);
+- **level options** (`level_options.gd`) in the pause menu: time of day (real time / fixed hour), fog, clouds,
+  sun glare, rain — host only, synchronised over LAN;
+- `level_environment.gd` (the level's Environment wins over the graphics menu), `interior_env.gd` (interiors use the
+  level's environment without sky and fog).
+
+After the export, re-run Godot's import (`godot --headless --import --path <CyberRealm>/Game/source`).
+
+Other generator-side fixes that benefit every export: structural meshes without a NIF collision node (cave rocks,
+boulders, ruin walls, pit floors…) get their own geometry as collider; alpha materials (foliage, tapestries) are
+double-sided with a capped alpha cut-off; a texture that has an alpha channel and is used with `BLEND`/`MASK` on some
+meshes but `OPAQUE` on others is made consistent (fixes tapestries and rugs drawn with opaque fringes); the water
+shader is embedded in each scene (no external dependency, needed to send the level to other players).
 
 ## Farlands / LODs
 

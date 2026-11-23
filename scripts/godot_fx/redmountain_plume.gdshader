@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode unshaded, cull_front, depth_test_disabled, depth_draw_never, shadows_disabled, fog_disabled, blend_premul_alpha;
+render_mode unshaded, cull_disabled, depth_test_disabled, depth_draw_never, shadows_disabled, fog_disabled, blend_premul_alpha;
 // Panache de fumee du Mont Ecarlate : raymarching volumetrique dans une boite englobante.
 // Colonne qui s'evase et se penche sous le vent, bruit FBM deforme, eclairage solaire avec ombrage
 // propre, diffusion vers l'avant, lueur de lave a la base, brume atmospherique avec la distance.
@@ -39,7 +39,16 @@ uniform float fade_end = 7000.0;             // m : invisible au-dela
 uniform float haze_density = 0.00035;           // 1/m
 uniform float haze_floor : hint_range(0.0, 1.0) = 0.5;    // perspective atmospherique minimale : meme voile que la montagne
 uniform vec3 aerial_tint : source_color = vec3(0.243, 0.380, 0.596);   // teinte lointaine de l'impostor
+uniform float day_light = 1.0;           // 0 nuit .. 1 jour (voile atmospherique)
 uniform float base_sink = 30.0;                 // m : la colonne nait sous le bord du cratere (cachee par l'arete avant)
+uniform bool mt_enabled = false;                // impostor de la montagne present
+uniform vec3 mt_center = vec3(0.0);             // centre du plan de l'impostor (monde)
+uniform float mt_size = 896.87;                 // cote du plan de l'impostor (m)
+uniform float mt_front = 400.0;                // marge (m) devant le plan de la montagne ou la fumee reste masquee
+uniform sampler2D mt_atlas0 : filter_linear_mipmap, repeat_disable;
+uniform sampler2D mt_atlas1 : filter_linear_mipmap, repeat_disable;
+uniform sampler2D mt_atlas2 : filter_linear_mipmap, repeat_disable;
+uniform sampler2D mt_atlas3 : filter_linear_mipmap, repeat_disable;
 uniform sampler2D blue_noise : filter_nearest, repeat_enable, hint_default_white;
 uniform sampler2D depth_tex : hint_depth_texture, filter_nearest, repeat_disable;
 
@@ -102,14 +111,49 @@ float hg(float c, float g) {
 	return (1.0 - g2) / (4.0 * 3.14159265 * pow(1.0 + g2 - 2.0 * g * c, 1.5));
 }
 
+float mt_sprite(int angle, vec2 suv) {
+	int sp = angle % 16;
+	vec2 cell = vec2(float(sp % 4), float(sp / 4));
+	vec2 uv = (cell + suv) / 4.0;
+	int atl = angle / 16;
+	if (atl == 0) return textureLod(mt_atlas0, uv, 1.5).r;
+	if (atl == 1) return textureLod(mt_atlas1, uv, 1.5).r;
+	if (atl == 2) return textureLod(mt_atlas2, uv, 1.5).r;
+	return textureLod(mt_atlas3, uv, 1.5).r;
+}
+
+// Couverture (0..1) de la silhouette de la montagne sur ce rayon ; t_plane = distance du plan de l'impostor.
+float mountain_cover(vec3 cam, vec3 rd, out float t_plane) {
+	t_plane = 1e9;
+	if (!mt_enabled) return 0.0;
+	vec3 to_cam = cam - mt_center;
+	to_cam.y = 0.0;
+	vec3 n = normalize(to_cam + vec3(1e-6, 0.0, 0.0));
+	vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), n));
+	float denom = dot(rd, n);
+	if (denom > -1e-4) return 0.0;
+	t_plane = dot(mt_center - cam, n) / denom;
+	vec3 h = cam + rd * t_plane - mt_center;
+	vec2 quv = vec2(dot(h, right), h.y) / mt_size + 0.5;
+	if (quv.x < 0.0 || quv.x > 1.0 || quv.y < 0.0 || quv.y > 1.0) return 0.0;
+	float ang = atan(n.x, -n.z);
+	float f = mod(ang / (6.28318530718 / 64.0), 64.0);
+	int k = int(f);
+	int k2 = (k + 1) % 64;
+	float w = clamp((fract(f) - 0.5) / 0.1 + 0.5, 0.0, 1.0);
+	vec2 suv = vec2(quv.x, 1.0 - quv.y);
+	float m = mix(mt_sprite(k, suv), mt_sprite(k2, suv), w);
+	return smoothstep(0.005, 0.03, m);
+}
+
 void vertex() {
-	// la boite est rendue en repere monde (l'objet est a l'origine, sans rotation)
+	POSITION = vec4(VERTEX.x, VERTEX.y, 1.0, 1.0);   // quad plein ecran (QuadMesh 2x2)
 }
 
 void fragment() {
 	vec3 cam = (INV_VIEW_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	vec3 frag_world = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	vec3 rd = normalize(frag_world - cam);
+	vec4 vp = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, 0.5, 1.0);
+	vec3 rd = normalize((INV_VIEW_MATRIX * vec4(vp.xyz / vp.w, 0.0)).xyz);
 
 	// intersection rayon / boite
 	vec3 inv = 1.0 / (rd + vec3(1e-7));
@@ -139,6 +183,8 @@ void fragment() {
 	float cosv = dot(rd, sun_dir);
 	float phase = mix(1.0, hg(cosv, 0.55) * 4.0 * 3.14159265 * 0.18, forward_strength);
 
+	float t_plane;
+	float mt_cover = mountain_cover(cam, rd, t_plane);
 	vec3 col = vec3(0.0);
 	float T = 1.0;
 	for (int i = 0; i < 128; i++) {
@@ -159,6 +205,7 @@ void fragment() {
 			float lava = lava_glow * exp(-max(h, 0.0) / lava_radius) * smoothstep(lava_radius * 3.0, 0.0, h);
 			vec3 emit = vec3(1.0, 0.38, 0.08) * lava * dens;
 			float a = 1.0 - exp(-dens * extinction * dt);
+			if (t > t_plane - mt_front) a *= 1.0 - mt_cover;   // derriere la montagne (marge : la colonne est a cheval sur son plan)
 			col += T * (tint * light + emit) * a;
 			T *= 1.0 - a;
 			if (T < 0.015) break;
@@ -170,7 +217,7 @@ void fragment() {
 	float haze = 1.0 - exp(-dist * haze_density);
 	// perspective atmospherique : le panache est voile comme la montagne (sinon il parait au premier plan)
 	haze = max(haze, haze_floor);
-	vec3 aerial = mix(fog_color, aerial_tint, 0.5);
+	vec3 aerial = mix(fog_color, aerial_tint * (0.06 + 0.94 * day_light), 0.5);
 	col = mix(col, aerial * alpha, haze * 0.95);
 	ALBEDO = col * fade;
 	ALPHA = alpha * fade;

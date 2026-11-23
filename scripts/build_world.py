@@ -49,6 +49,34 @@ def rnd(v, nd=4):
     return [round(float(x), nd) for x in v]
 
 
+# Elements STRUCTURELS sans noeud de collision dans le NIF (rochers et parois de grotte, boulders, murs et
+# ponts des ruines, sols de fosse, plateformes...) : le joueur les traversait. On leur donne comme collision
+# leur propre geometrie visible, s'ils font au moins STRUCT_MIN_SIZE_M metres. Le decor (mousse, tapis,
+# cordes, lianes, bannieres...) reste sans collision.
+STRUCT_WORDS = ("rock", "boulder", "floor", "flr", "column", "wall", "bridge", "mezz", "plank", "pit", "beam",
+                "ramp", "stair", "platform", "walkway", "deck", "pole", "ceil", "blacksquare")
+NOT_STRUCT_WORDS = ("moss", "rug", "rope", "vine", "banner", "kelp", "_dj", "web", "curtain", "tapestry",
+                    "cloth", "torch", "scorch", "lamp", "light")
+STRUCT_MIN_SIZE_M = 1.2
+
+
+def structural_collision(rid, key, model):
+    """(positions, indices) de collision pour un modele structurel sans collision, sinon None."""
+    if not model.prims:
+        return None
+    name = (str(rid) + " " + key.rsplit("/", 1)[-1]).lower()
+    if not any(w in name for w in STRUCT_WORDS) or any(w in name for w in NOT_STRUCT_WORDS):
+        return None
+    if model.size / 100.0 < STRUCT_MIN_SIZE_M:           # unites Morrowind -> metres
+        return None
+    pos, idx, base = [], [], 0
+    for p in model.prims:
+        pos.append(np.asarray(p.pos, dtype=np.float32))
+        idx.append(np.asarray(p.idx, dtype=np.uint32) + np.uint32(base))
+        base += len(p.pos)
+    return np.concatenate(pos), np.concatenate(idx)
+
+
 def place_refs(builder, refs, origin, needed, mesh_ids):
     """Un noeud (+ un noeud de collision) par reference. `origin` : decalage MW soustrait."""
     placed = 0
@@ -63,6 +91,8 @@ def place_refs(builder, refs, origin, needed, mesh_ids):
         if key not in mesh_ids:
             vis = L.add_model_mesh(builder, key, model, needed) if model.prims else None
             col = None
+            if model.collision is None:
+                model.collision = structural_collision(rid, key, model)
             if model.collision is not None:
                 pos, idx = model.collision
                 col = builder.add_mesh(key + "-colonly",

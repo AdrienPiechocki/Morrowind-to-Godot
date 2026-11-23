@@ -13,6 +13,7 @@ cd "$SCRIPT_DIR"
 #           --fog-distance M  (brume : distance de disparition, defaut auto selon l'etendue exportee)
 #           --no-fx  (pas de ciel/meteo/post-traitement dans la scene Godot)
 #           --godot-name NOM  (dossier du projet Godot genere, defaut "morrowind")
+#           --cyberrealm DIR  (adapte aussi le resultat a CyberRealm : DIR = son dossier Game/source/user)
 #           -v | --verbose  (affiche tous les messages des scripts Python et de Blender)
 USER_ANIMS=""
 USER_NPCS=""
@@ -25,6 +26,7 @@ RED_MOUNTAIN=""   # --red-mountain DIR : mod Red Mountain (panache + impostor du
 NO_RM=0
 FOG_DISTANCE=""   # --fog-distance M : distance (m) ou tout disparait dans la brume (defaut : auto, cache les bords)
 GODOT_NAME="morrowind"   # --godot-name : nom du dossier dans le projet Godot
+CYBERREALM_DIR=""        # --cyberrealm DIR : dossier user/ de CyberRealm (export adapte : portes, options, LAN)
 VFLAG=""          # "--verbose" transmis aux scripts Python (vide = barre de progression seule)
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -55,6 +57,9 @@ while [ $# -gt 0 ]; do
         --godot-name) [ $# -ge 2 ] || { echo "[ERROR] --godot-name attend un nom"; exit 1; }
                    GODOT_NAME="$2"; shift 2 ;;
         --godot-name=*) GODOT_NAME="${1#--godot-name=}"; shift ;;
+        --cyberrealm) [ $# -ge 2 ] || { echo "[ERROR] --cyberrealm attend un dossier (Game/source/user)"; exit 1; }
+                   CYBERREALM_DIR="$2"; shift 2 ;;
+        --cyberrealm=*) CYBERREALM_DIR="${1#--cyberrealm=}"; shift ;;
         -v|--verbose) VFLAG="--verbose"; shift ;;
         *)         echo "[ERROR] Option inconnue : $1"; exit 1 ;;
     esac
@@ -723,6 +728,11 @@ else
 fi
 python3 scripts/build_godot.py "${GODOT_ARGS[@]}" || warn "Godot folder generation failed."
 ok "Godot folder: $GODOT_DIR/$GODOT_NAME"
+if [ -n "$CYBERREALM_DIR" ]; then
+    python3 scripts/cyberrealm_export.py --src "$GODOT_DIR/$GODOT_NAME" --dest "$CYBERREALM_DIR" \
+        && ok "CyberRealm: $CYBERREALM_DIR (relancer: godot --headless --import --path <CyberRealm>/Game/source)" \
+        || warn "CyberRealm export failed."
+fi
 
 # ==========================================
 # 10. Cleanup and summary

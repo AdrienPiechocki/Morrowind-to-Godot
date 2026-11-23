@@ -13,6 +13,8 @@ SCALE = 0.01
 C = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float64)
 
 
+ALPHA_CUTOFF_MAX = 0.28   # seuil alpha maximal des materiaux « MASK » (feuillages)
+
 def euler_to_matrix(rx, ry, rz):
     """Rotation d'une reference Morrowind : Rx(-rx) Ry(-ry) Rz(-rz) (signes du pipeline Blender)."""
     rx, ry, rz = -rx, -ry, -rz
@@ -96,11 +98,15 @@ class GltfBuilder:
         pbr = {"baseColorFactor": [float(c) for c in color], "metallicFactor": 0.0, "roughnessFactor": 1.0}
         if texture_uri:
             pbr["baseColorTexture"] = {"index": self.texture(texture_uri)}
-        m = {"name": name, "pbrMetallicRoughness": pbr, "doubleSided": bool(double_sided)}
+        # TOUJOURS double face : entre les faces des meshes (jonctions en T de la geometrie d'origine), de fines
+        # fissures laissent voir le ciel en traits clairs ; en double face on voit l'envers des faces voisines.
+        # Feuillages / transparents : visibles des deux cotes (sinon ils « clignotent » selon l'angle) ; seuil alpha plafonne (avec les mipmaps, les feuilles s'amincissent puis
+        # disparaissent a distance).
+        m = {"name": name, "pbrMetallicRoughness": pbr, "doubleSided": True}
         if alpha != "OPAQUE":
             m["alphaMode"] = alpha
             if alpha == "MASK":
-                m["alphaCutoff"] = float(cutoff)
+                m["alphaCutoff"] = min(float(cutoff), ALPHA_CUTOFF_MAX)
         self.materials.append(m)
         self._mat_ids[key] = len(self.materials) - 1
         return self._mat_ids[key]

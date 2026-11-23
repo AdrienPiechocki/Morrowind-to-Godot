@@ -22,6 +22,7 @@ Sources (toutes optionnelles, au moins une requise) :
   --lod DIR           export_lod (lod_*.gltf + manifest.json + textures/)
 """
 import argparse
+import os
 import json
 import math
 import re
@@ -67,6 +68,58 @@ def node_name(text, used):
         name, n = f"{base}_{n}", n + 1
     used.add(name)
     return name
+
+
+def fix_alpha_materials(models):
+    """Harmonise le mode alpha d'une meme texture entre les meshes.
+
+    Selon le NIF, une meme texture a canal alpha (tapisseries, bordures de tapis, paille, feuillages...) est
+    exportee en BLEND/MASK sur certains meshes et en OPAQUE sur d'autres (propriete alpha absente ou non
+    heritee) : sur ceux-la, les zones transparentes ressortent en aplats opaques (« tapis mal textures »).
+    Si une texture a >2 % de pixels transparents et sert deja en BLEND/MASK ailleurs, ses materiaux OPAQUE
+    passent dans ce mode (BLEND s'il existe, sinon MASK), en double face."""
+    import collections
+    import numpy as np
+    from PIL import Image
+    docs, modes = {}, collections.defaultdict(set)
+    for f in Path(models).rglob("*.gltf"):
+        g = json.loads(f.read_text(encoding="utf-8"))
+        docs[f] = g
+        for m in g.get("materials", []):
+            bt = m.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+            if bt:
+                uri = g["images"][g["textures"][bt["index"]]["source"]]["uri"]
+                modes[os.path.normpath(os.path.join(f.parent, uri))].add(m.get("alphaMode", "OPAQUE"))
+    upgrade = {}
+    for tex, ms in modes.items():
+        if "OPAQUE" in ms and ms & {"BLEND", "MASK"}:
+            try:
+                alpha = np.asarray(Image.open(tex).convert("RGBA"))[..., 3]
+            except (OSError, ValueError):
+                continue
+            if float((alpha < 250).mean()) > 0.02:
+                upgrade[tex] = "BLEND" if "BLEND" in ms else "MASK"
+    if not upgrade:
+        return 0
+    fixed = 0
+    for f, g in docs.items():
+        changed = False
+        for m in g.get("materials", []):
+            bt = m.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+            if not bt or m.get("alphaMode", "OPAQUE") != "OPAQUE":
+                continue
+            uri = g["images"][g["textures"][bt["index"]]["source"]]["uri"]
+            mode = upgrade.get(os.path.normpath(os.path.join(f.parent, uri)))
+            if mode:
+                m["alphaMode"] = mode
+                m["doubleSided"] = True
+                if mode == "MASK":
+                    m["alphaCutoff"] = 0.28
+                changed = True
+                fixed += 1
+        if changed:
+            f.write_text(json.dumps(g, separators=(",", ":")), encoding="utf-8")
+    return fixed
 
 
 def gltf_file(base):
@@ -263,13 +316,21 @@ def add_fx_nodes(sc, outdoor):
     def script(name):
         return f'ExtResource("{sc.ext_resource("Script", f"{res}/scripts/{name}.gd")}")'
     sc.node("PostFX", "Node", ".", props={"script": script("postfx")})
-    sc.node("Underwater", "Node", ".", props={"script": script("underwater")})
+    # Shader et bruit fournis par la scene (exports) : un load() a chemin construit n'est pas transmis aux
+    # autres joueurs en multijoueur (CyberRealm), un export l'est.
+    uw_sh = sc.ext_resource("Shader", f"{res}/shaders/underwater.gdshader")
+    uw_props = {"script": script("underwater"), "shader": f'ExtResource("{uw_sh}")'}
+    noise = FX["tex"].get("perlin2d")
+    if noise:
+        uw_props["noise_tex"] = f'ExtResource("{sc.ext_resource("Texture2D", f"{res}/fx/{noise}")}")'
+    sc.node("Underwater", "Node", ".", props=uw_props)
     if outdoor:
         sc.node("DayNight", "Node", ".", props={
             "script": script("daynight"), "sun": 'NodePath("../Sun")',
             "world_environment": 'NodePath("../WorldEnvironment")',
             "view_distance": "@@VIEWDIST@@"})
         sc.node("Weather", "Node3D", ".", props={"script": script("weather")})
+        sc.node("SunGlare", "Node", ".", props={"script": script("sun_glare")})
 
 
 def find_shader_pack(arg):
@@ -357,7 +418,7 @@ def install_fx(base, res, pack):
     (base / "scripts").mkdir(parents=True, exist_ok=True)
     (base / "shaders").mkdir(parents=True, exist_ok=True)
     (base / "fx").mkdir(parents=True, exist_ok=True)
-    for f in ("daynight.gd", "underwater.gd", "weather.gd", "postfx.gd"):
+    for f in ("daynight.gd", "underwater.gd", "weather.gd", "postfx.gd", "sun_glare.gd"):
         shutil.copy2(FX_SRC / f, base / "scripts" / f)
     for f in ("sky.gdshader", "underwater.gdshader"):
         shutil.copy2(FX_SRC / f, base / "shaders" / f)
@@ -492,11 +553,12 @@ def write_water_assets(base):
 
 def water_material(sc, res):
     """Sous-ressource ShaderMaterial de l'eau (les scenes partagent les memes fichiers)."""
-    sh = sc.ext_resource("Shader", f"{res}/shaders/water.gdshader")
+    # Shader embarque dans la scene (pas de dependance externe) : necessaire pour le transfert multijoueur.
+    sh = sc.sub("Shader", {"code": string(WATER_SHADER)})
     na = sc.ext_resource("Texture2D", f"{res}/textures/water_nm_a.png")
     nb = sc.ext_resource("Texture2D", f"{res}/textures/water_nm_b.png")
     params = {
-        "shader": f'ExtResource("{sh}")',
+        "shader": f'SubResource("{sh}")',
         "shader_parameter/normal_a": f'ExtResource("{na}")',
         "shader_parameter/normal_b": f'ExtResource("{nb}")'}
     if FX["on"] and "ripples" in FX["tex"]:
@@ -832,10 +894,21 @@ def main():
         real = covers((manifest_out.get("world") or {}).get("exterior", {}).get("grid")) or any(
             covers(c.get("cells")) for c in (manifest_out.get("lod") or {}).get("chunks", []))
         rs = world.ext_resource("Script", f"{res}/scripts/redmountain.gd")
-        world.node("RedMountain", "Node3D", ".", props={
+        rm_props = {
             "script": f'ExtResource("{rs}")',
             "show_impostor": "false" if real else "true",
-            "daynight": 'NodePath("../DayNight")'})
+            "daynight": 'NodePath("../DayNight")'}
+
+        def rm_res(rtype, rel, prop):
+            if (base / rel).is_file():
+                rm_props[prop] = f'ExtResource("{world.ext_resource(rtype, f"{res}/{rel}")}")'
+        # ressources fournies par la scene (exports) : transmises aux autres joueurs en multijoueur
+        rm_res("Shader", "shaders/redmountain_plume.gdshader", "plume_shader")
+        rm_res("Shader", "shaders/redmountain_mountain.gdshader", "mountain_shader")
+        rm_res("Texture2D", "fx/redmountain_bluenoise.png", "blue_noise")
+        for i, nm in enumerate(("0-15", "16-31", "32-47", "48-63")):
+            rm_res("Texture2D", f"fx/red-mountain/{nm}.png", f"atlas{i}")
+        world.node("RedMountain", "Node3D", ".", props=rm_props)
         print(f"[+] Red Mountain at cell {RM_CELL}: {'real terrain in scene, no impostor' if real else 'impostor'}")
 
     # brume epaisse : cache les bords de la carte exportee (valeur connue seulement maintenant)
@@ -844,6 +917,9 @@ def main():
     if FX["on"]:
         print(f"[+] Fog: everything fades out at {vd:.0f} m" if vd else "[+] Fog: default (no extent known)")
 
+    n_alpha = fix_alpha_materials(base / "models")
+    if n_alpha:
+        print(f"[+] Alpha: {n_alpha} opaque material(s) switched to the alpha mode their texture uses elsewhere")
     add_camera(world, cam_id, spawn)
     world.write(base / "world.tscn")
 

@@ -1,6 +1,6 @@
 extends Node3D
 # Meteo : pluie (particules autour de la camera, ciel couvert, ondulations sur l'eau).
-#   R : pluie on/off.   Equivalent simplifie de la partie "pluie" de wetworld (Rafael's Shader Pack).
+#   Pluie on/off : menu pause > Level (hote).   Equivalent simplifie de la partie "pluie" de wetworld (Rafael's Shader Pack).
 
 @export var raining := false
 @export var rain_amount := 6000
@@ -42,6 +42,7 @@ var _intensity := 0.0                 # 0..1, lisse
 var _water_mats: Array[ShaderMaterial] = []
 
 func _ready() -> void:
+	set_meta("lan_skip_children", true)   # pluie recréée par chaque machine (pas bakée)
 	if daynight == null:
 		daynight = get_parent().get_node_or_null("DayNight")
 	_build_rain()
@@ -80,10 +81,6 @@ func _build_rain() -> void:
 	_rain.draw_pass_1 = quad
 	_rain.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_rain)
-
-func _unhandled_key_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R:
-		raining = not raining
 
 func _process(delta: float) -> void:
 	_intensity = move_toward(_intensity, 1.0 if raining else 0.0, delta * 0.25)

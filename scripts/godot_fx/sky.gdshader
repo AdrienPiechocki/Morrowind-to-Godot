@@ -46,6 +46,15 @@ float fbm(vec2 p) {
 	return s / 0.9375;
 }
 
+// Carte d'etoiles pour une direction donnee (couture de atan() geree par le choix des derivees)
+vec3 star_sample(vec3 sd) {
+	vec2 suv = vec2(atan(sd.x, sd.z) / (2.0 * PI) + 0.5, acos(clamp(sd.y, -1.0, 1.0)) / PI);
+	vec2 suv2 = vec2(fract(suv.x + 0.5), suv.y);
+	vec2 gx = dFdx(suv), gy = dFdy(suv), gx2 = dFdx(suv2), gy2 = dFdy(suv2);
+	bool ok = dot(gx, gx) + dot(gy, gy) <= dot(gx2, gx2) + dot(gy2, gy2);
+	return textureGrad(star_map, suv, ok ? gx : gx2, ok ? gy : gy2).rgb;
+}
+
 // Disque lunaire : couleur eclairee (phase) + opacite
 vec4 moon(vec3 dir, vec3 m, float radius, sampler2D tex, float night, float gain) {
 	float c = dot(dir, m);
@@ -95,12 +104,11 @@ void sky() {
 
 	// ---- voie lactee / etoiles ----
 	if (dir.y > -0.05 && night > 0.0) {
-		vec2 suv = vec2(atan(dir.x, dir.z) / (2.0 * PI) + 0.5, acos(clamp(dir.y, -1.0, 1.0)) / PI);
-		// couture de atan() : on prend la parametrisation decalee de 0.5 la ou elle est continue
-		vec2 suv2 = vec2(fract(suv.x + 0.5), suv.y);
-		vec2 gx = dFdx(suv), gy = dFdy(suv), gx2 = dFdx(suv2), gy2 = dFdy(suv2);
-		bool ok = dot(gx, gx) + dot(gy, gy) <= dot(gx2, gx2) + dot(gy2, gy2);
-		vec3 stars = textureGrad(star_map, suv, ok ? gx : gx2, ok ? gy : gy2).rgb;
+		vec3 sdA = vec3(dir.x, dir.z, -dir.y);    // rotation : poles de la carte au nord/sud (horizon)
+		vec3 sdB = vec3(-dir.z, dir.x, -dir.y);   // poles a l'est/ouest (horizon)
+		vec2 suv = vec2(atan(sdA.x, sdA.z) / (2.0 * PI) + 0.5, acos(clamp(sdA.y, -1.0, 1.0)) / PI);
+		float wA = 1.0 - smoothstep(0.7, 0.95, abs(sdA.y));
+		vec3 stars = star_sample(sdA) * wA + star_sample(sdB) * (1.0 - wA);
 		float tw = 1.0 + twinkle * 0.35 * (hash12(floor(suv * 1500.0)) - 0.5) * sin(TIME * 3.0 + hash12(floor(suv * 700.0)) * 40.0);
 		col += stars * star_brightness * 2.2 * night * tw * (1.0 - overcast);
 	}
@@ -117,7 +125,7 @@ void sky() {
 	vec3 sun_col = mix(vec3(1.0, 0.55, 0.25), vec3(1.0, 0.96, 0.85), clamp(sun_h * 3.0, 0.0, 1.0));
 	if (sun_h > -0.06) {
 		float vis = smoothstep(-0.06, 0.02, sun_h);
-		col += sun_col * (sun_disc * 14.0 + sun_glow) * vis * (1.0 - overcast * 0.85);
+		col += sun_col * (sun_disc * 3.0) * vis * (1.0 - overcast * 0.85);   // halo : SunGlare
 	}
 
 	// ---- nuages : plan projete, FBM de bruit, eclaires par le soleil ----

@@ -20,6 +20,15 @@ const MW_TO_M := 0.01
 @export var fade_start_m := 1500.0   # le volcan devient transparent a partir de cette distance...
 @export var fade_end_m := 7000.0     # ...et disparait ici
 @export var daynight: Node
+# Ressources fournies par la scène (exports) : un load() à chemin construit
+# n'est pas transmis en LAN, les exports le sont.
+@export var plume_shader: Shader
+@export var mountain_shader: Shader
+@export var blue_noise: Texture2D
+@export var atlas0: Texture2D
+@export var atlas1: Texture2D
+@export var atlas2: Texture2D
+@export var atlas3: Texture2D
 
 var _plume_mat: ShaderMaterial
 var _mountain_mat: ShaderMaterial
@@ -32,10 +41,8 @@ static func mw_to_godot(p: Vector3) -> Vector3:
 	# Morrowind (x est, y nord, z haut) -> Godot (x est, y haut, z = -nord), en metres
 	return Vector3(p.x, p.z, -p.y) * MW_TO_M
 
-func _root_dir() -> String:
-	return get_script().resource_path.get_base_dir().get_base_dir().trim_prefix("res://")
-
 func _ready() -> void:
+	set_meta("lan_skip_children", true)   # panache/impostor recréés par chaque machine (pas bakés)
 	if daynight == null:
 		daynight = get_parent().get_node_or_null("DayNight")
 	if daynight:
@@ -50,19 +57,20 @@ func _ready() -> void:
 func _build_plume() -> void:
 	var origin := mw_to_godot(crater_mw) + Vector3(0.0, altitude_offset_m, 0.0)
 	var wind := Vector2(wind_mw.x, -wind_mw.y).normalized()          # nord MW = -z Godot
-	var reach := plume_radius_top_m + plume_bend_m
+	var reach := plume_radius_top_m * 1.3 + plume_bend_m + 30.0
 	var bmin := Vector3(origin.x - reach, origin.y - base_sink_m - 2.0, origin.z - reach)
-	var bmax := Vector3(origin.x + reach, origin.y + plume_height_m, origin.z + reach)
-	var mesh := BoxMesh.new()
-	mesh.size = bmax - bmin
+	var bmax := Vector3(origin.x + reach, origin.y + plume_height_m + 30.0, origin.z + reach)
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(2, 2)
 	var mi := MeshInstance3D.new()
 	mi.name = "Plume"
 	mi.mesh = mesh
-	mi.position = (bmin + bmax) * 0.5
+	mi.position = Vector3.ZERO
+	mi.ignore_occlusion_culling = true
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	mi.extra_cull_margin = 4096.0
+	mi.extra_cull_margin = 16384.0
 	_plume_mat = ShaderMaterial.new()
-	_plume_mat.shader = load("res://%s/shaders/redmountain_plume.gdshader" % _root_dir())
+	_plume_mat.shader = plume_shader
 	_plume_mat.set_shader_parameter("box_min", bmin)
 	_plume_mat.set_shader_parameter("box_max", bmax)
 	_plume_mat.set_shader_parameter("origin", origin)
@@ -72,24 +80,21 @@ func _build_plume() -> void:
 	_plume_mat.set_shader_parameter("bend", plume_bend_m)
 	_plume_mat.set_shader_parameter("wind_dir", wind)
 	_plume_mat.set_shader_parameter("steps", plume_steps)
-	var bn := load("res://%s/fx/redmountain_bluenoise.png" % _root_dir())
-	if bn:
-		_plume_mat.set_shader_parameter("blue_noise", bn)
-	_plume_mat.render_priority = 0           # AVANT l'impostor : la montagne passe devant la fumee
+	if blue_noise:
+		_plume_mat.set_shader_parameter("blue_noise", blue_noise)
+	_plume_mat.render_priority = -1           # puis le panache (masque par la montagne dans le shader)
 	mi.material_override = _plume_mat
 	add_child(mi)
 
 func _build_impostor() -> void:
-	var dir := "res://%s/fx/red-mountain/" % _root_dir()
-	var names := ["0-15", "16-31", "32-47", "48-63"]
+	var atlases := [atlas0, atlas1, atlas2, atlas3]
 	_mountain_mat = ShaderMaterial.new()
-	_mountain_mat.shader = load("res://%s/shaders/redmountain_mountain.gdshader" % _root_dir())
+	_mountain_mat.shader = mountain_shader
 	for i in 4:
-		var t := load(dir + names[i] + ".png")
-		if t == null:
-			push_warning("Red Mountain: %s%s.png introuvable, impostor ignore" % [dir, names[i]])
+		if atlases[i] == null:
+			push_warning("Red Mountain: atlas%d manquant, impostor ignore" % i)
 			return
-		_mountain_mat.set_shader_parameter("atlas%d" % i, t)
+		_mountain_mat.set_shader_parameter("atlas%d" % i, atlases[i])
 	# plan vertical centre sur l'origine des photos, abaisse de la hauteur d'appareil (z/2)
 	var ref := mw_to_godot(photo_origin_mw) + Vector3(0.0, altitude_offset_m * 2.0, 0.0)   # le plan est centre a ref.y / 2
 	var photo_dist := 81920.0 * MW_TO_M                      # 10 cells
@@ -104,9 +109,15 @@ func _build_impostor() -> void:
 	mi.mesh = quad
 	mi.position = Vector3(ref.x, ref.y * 0.5, ref.z)
 	_imp_center = mi.position
+	if _plume_mat != null:
+		_plume_mat.set_shader_parameter("mt_enabled", true)
+		_plume_mat.set_shader_parameter("mt_center", _imp_center)
+		_plume_mat.set_shader_parameter("mt_size", size)
+		for i in 4:
+			_plume_mat.set_shader_parameter("mt_atlas%d" % i, atlases[i])
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mi.extra_cull_margin = 4096.0
-	_mountain_mat.render_priority = 10       # apres le panache : elle le recouvre
+	_mountain_mat.render_priority = -2       # montagne d'abord (derriere les fenetres)
 	mi.material_override = _mountain_mat
 	add_child(mi)
 
@@ -124,6 +135,7 @@ func _process(_delta: float) -> void:
 		fog_col = _env.fog_light_color
 	var light := clampf(factor + 0.12, 0.0, 1.0)
 	if _plume_mat:
+		_plume_mat.set_shader_parameter("day_light", light)
 		_plume_mat.set_shader_parameter("fade_start", fade_start_m)
 		_plume_mat.set_shader_parameter("fade_end", fade_end_m)
 		_plume_mat.set_shader_parameter("sun_dir", sun_dir)

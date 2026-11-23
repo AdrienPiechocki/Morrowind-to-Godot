@@ -8,15 +8,20 @@ extends Node
 @export var light_rays := true
 @export var plankton := true
 
+# Ressources fournies par la scène (exports) : un load() à chemin construit
+# n'est pas transmis en LAN, les exports le sont.
+@export var shader: Shader
+@export var noise_tex: Texture2D
+
 var _quad: MeshInstance3D
 var _mat: ShaderMaterial
 
 func _ready() -> void:
+	set_meta("lan_skip_children", true)   # quad recréé par chaque machine (pas baké)
 	_mat = ShaderMaterial.new()
-	_mat.shader = load("res://%s/shaders/underwater.gdshader" % _root_dir())
-	var noise := load("res://%s/fx/perlin2d.png" % _root_dir())
-	if noise:
-		_mat.set_shader_parameter("noise_tex", noise)
+	_mat.shader = shader
+	if noise_tex:
+		_mat.set_shader_parameter("noise_tex", noise_tex)
 	# quad plein ecran (le vertex shader le colle a l'ecran) ; fixe a la camera active
 	_quad = MeshInstance3D.new()
 	var m := QuadMesh.new()
@@ -28,10 +33,6 @@ func _ready() -> void:
 	_quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_quad.visible = false
 	add_child(_quad)
-
-func _root_dir() -> String:
-	# dossier du projet genere, deduit du chemin de ce script (res://<dossier>/scripts/underwater.gd)
-	return get_script().resource_path.get_base_dir().get_base_dir().trim_prefix("res://")
 
 func _water_level_at(p: Vector3) -> float:
 	# niveau de l'eau au-dessus de p (NAN si aucun plan d'eau ne couvre ce point)

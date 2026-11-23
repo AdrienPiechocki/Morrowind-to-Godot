@@ -1,14 +1,17 @@
 extends Node
 # Cycle jour/nuit : place le soleil et les deux lunes, pilote le ciel (sky.gdshader), la lumiere,
 # l'ambiance et le brouillard atmospherique.
-#   T : lancer / arreter l'ecoulement du temps      [ et ] : -1 h / +1 h
+# Reglages (heure) : menu pause > Level, reserve a l'hote, synchronises en LAN
 # A l'exterieur seulement (world.tscn). Reglages dans l'inspecteur.
 
+@export var real_time := true                 # suit l'heure locale de la machine (IRL)
+@export_range(0.0, 1.0, 0.01) var cloud_density := 0.43   # 0 ciel degage .. 1 couvert (menu pause > Level)
 @export var time_of_day := 10.0               # heures (0-24)
 @export var day_length := 0.0                 # secondes reelles pour 24 h ; 0 = temps fige
 @export var sun_energy := 1.5
 @export var moon_energy := 0.14
 @export var secunda_orbit := 0.0873           # rad (5 deg) : distance angulaire Secunda <-> Masser
+@export_range(0.0, 5.0, 0.05) var fog_thickness := 1.0   # x densite de la brume (0 = aucune)
 @export var view_distance := 0.0              # m : distance ou tout disparait dans la brume (0 = brume legere par defaut)
 @export var sun: DirectionalLight3D
 @export var world_environment: WorldEnvironment
@@ -26,22 +29,30 @@ func _ready() -> void:
 		_env = world_environment.environment
 		if _env and _env.sky:
 			_sky_mat = _env.sky.sky_material as ShaderMaterial
+	if real_time:
+		time_of_day = _clock_hours()
 	_update()
 
-func _unhandled_key_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
-		match event.keycode:
-			KEY_T:
-				day_length = 0.0 if day_length > 0.0 else 240.0
-			KEY_BRACKETLEFT:
-				time_of_day = fposmod(time_of_day - 1.0, 24.0)
-			KEY_BRACKETRIGHT:
-				time_of_day = fposmod(time_of_day + 1.0, 24.0)
+func _clock_hours() -> float:
+	var d := Time.get_datetime_dict_from_system()   # heure locale
+	return float(d.hour) + float(d.minute) / 60.0 + float(d.second) / 3600.0
 
 func _process(delta: float) -> void:
-	if day_length > 0.0:
+	if real_time:
+		time_of_day = _clock_hours()
+	elif day_length > 0.0:
 		time_of_day = fposmod(time_of_day + 24.0 * delta / day_length, 24.0)
 	_update()
+
+# Epaisseur de la brume : AUTOMATIQUE en heure reelle (dense a l'aube (pic vers 6h30), elle se
+# leve dans la matinee, legere l'apres-midi, voile leger le soir) ; en heure fixe, c'est le reglage fog_thickness.
+func _fog_time_factor() -> float:
+	var morning := exp(-pow((time_of_day - 6.5) / 2.0, 2.0))
+	var evening := exp(-pow((time_of_day - 19.5) / 1.8, 2.0))
+	return 0.55 + 2.4 * morning + 0.6 * evening
+
+func _fog_mul() -> float:
+	return _fog_time_factor() if real_time else fog_thickness
 
 func _dir(angle: float, tilt: float) -> Vector3:
 	return Vector3(cos(angle), sin(angle), tilt).normalized()
@@ -79,6 +90,7 @@ func _update() -> void:
 		_sky_mat.set_shader_parameter("masser_dir", masser_dir)
 		_sky_mat.set_shader_parameter("secunda_dir", secunda_dir)
 		_sky_mat.set_shader_parameter("overcast", overcast)
+		_sky_mat.set_shader_parameter("cloud_density", cloud_density)
 
 	if _env:
 		var horizon := Color(0.015, 0.025, 0.05).lerp(Color(0.58, 0.72, 0.88), day)
@@ -87,8 +99,8 @@ func _update() -> void:
 		horizon = horizon.lerp(Color(0.5, 0.52, 0.56) * day + Color(0.02, 0.025, 0.04) * (1.0 - day), overcast * 0.7)
 		_env.fog_light_color = horizon
 		var clear_density := 0.00035 if view_distance <= 0.0 else 3.9 / view_distance   # exp(-d*D) ~ 2 % a view_distance
-		_env.fog_density = lerpf(clear_density, clear_density * 2.2, overcast)
+		_env.fog_density = lerpf(clear_density, clear_density * 2.2, overcast) * _fog_mul()
 		_env.ambient_light_energy = lerpf(0.35, 1.0, day)
 		if _env.volumetric_fog_enabled:
 			_env.volumetric_fog_albedo = Color(1.0, 0.85, 0.65).lerp(Color(0.8, 0.85, 1.0), night)
-			_env.volumetric_fog_density = lerpf(0.0006, 0.004, overcast)
+			_env.volumetric_fog_density = lerpf(0.0006, 0.004, overcast) * _fog_mul()
