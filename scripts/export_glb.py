@@ -56,6 +56,11 @@ KEEP_PREFIXES = (
     else [p.strip().lower() for p in ANIMS_ARG.split(",") if p.strip()]
 )
 
+# --tex-max-side N : textures reduites (puissances de 2) jusqu'a ce que leur plus grand
+# cote soit <= N (LODs). Les atlas de terrain (LandAtlas_*) ne sont pas touches.
+_tms = get_arg("tex-max-side")
+TEX_MAX_SIDE = int(_tms) if _tms else None
+
 vprint(f"[+] Exporting glTF to: {output_path}")
 vprint(f"[+] Textures folder: {TEX_DIR} (relative: {TEX_REL})")
 
@@ -188,8 +193,13 @@ def merge_and_shrink_images(max_px=2_000_000, min_side=256):
             continue
         w, h = img.size
         nw, nh = w, h
-        while nw * nh > max_px and min(nw, nh) > min_side:
-            nw, nh = max(nw // 2, 1), max(nh // 2, 1)
+        if TEX_MAX_SIDE:
+            if not img.name.lower().startswith("landatlas"):
+                while max(nw, nh) > TEX_MAX_SIDE and min(nw, nh) > 1:
+                    nw, nh = max(nw // 2, 1), max(nh // 2, 1)
+        else:
+            while nw * nh > max_px and min(nw, nh) > min_side:
+                nw, nh = max(nw // 2, 1), max(nh // 2, 1)
         if (nw, nh) != (w, h):
             img.scale(nw, nh)
             shrunk += 1

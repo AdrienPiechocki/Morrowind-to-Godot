@@ -2823,37 +2823,42 @@ def fix_missing_textures():
 # EXECUTION PIPELINE
 # ==========================================
 
-vprint()
-vprint("=" * 60)
-vprint("MORROWIND WORLD RECONSTRUCTION")
-vprint("=" * 60)
-vprint()
-
-# Vider la scène par défaut (cube, caméra, lumière)
-for obj in list(bpy.data.objects):
-    bpy.data.objects.remove(obj)
-
-rebuild_cells_in_blender()
-report_failed_meshes()
-
-if not FULL_MODE:   # en mode full, chaque .blend est ecrit (textures corrigees) par rebuild_full
+def _main():
     vprint()
-    vprint("[+] Fixing missing textures...")
-    fix_missing_textures()
-    zero_material_emission()
+    vprint("=" * 60)
+    vprint("MORROWIND WORLD RECONSTRUCTION")
+    vprint("=" * 60)
+    vprint()
+
+    # Vider la scène par défaut (cube, caméra, lumière)
+    for obj in list(bpy.data.objects):
+        bpy.data.objects.remove(obj)
+
+    rebuild_cells_in_blender()
+    report_failed_meshes()
+
+    if not FULL_MODE:   # en mode full, chaque .blend est ecrit (textures corrigees) par rebuild_full
+        vprint()
+        vprint("[+] Fixing missing textures...")
+        fix_missing_textures()
+        zero_material_emission()
+
+        vprint()
+        vprint("[+] Saving Blender file...")
+
+        # Le mode REST n'était nécessaire que pour les calculs de bake : le
+        # restaurer, sinon l'armature reste évaluée au repos (T-Pose figée).
+        for _arm in bpy.data.armatures:
+            if _arm.pose_position != 'POSE':
+                _arm.pose_position = 'POSE'
+
+        bpy.ops.wm.save_as_mainfile(filepath="morrowind.blend")
 
     vprint()
-    vprint("[+] Saving Blender file...")
+    vprint("=" * 60)
+    vprint("[+] DONE")
+    vprint("=" * 60)
 
-    # Le mode REST n'était nécessaire que pour les calculs de bake : le
-    # restaurer, sinon l'armature reste évaluée au repos (T-Pose figée).
-    for _arm in bpy.data.armatures:
-        if _arm.pose_position != 'POSE':
-            _arm.pose_position = 'POSE'
 
-    bpy.ops.wm.save_as_mainfile(filepath="morrowind.blend")
-
-vprint()
-vprint("=" * 60)
-vprint("[+] DONE")
-vprint("=" * 60)
+if __name__ == "__main__":   # importable (generate_lod.py) sans lancer la conversion
+    _main()

@@ -422,11 +422,22 @@ def cmd_prepare(args):
 
     extract_archives(cfg, cache, bsatool)
 
+    content = list(cfg.content)
+    if args.plugins:
+        # Sous-ensemble de content= (ordre de chargement conserve), ex. "Morrowind.esm"
+        wanted = {n.strip().lower() for n in args.plugins.split(",") if n.strip()}
+        content = [n for n in content if n.lower() in wanted]
+        missing = wanted - {n.lower() for n in content}
+        if missing:
+            log(f"[ERROR] Not in content= of openmw.cfg: {', '.join(sorted(missing))}")
+            return 1
+        log(f"[+] Restricted to {len(content)} plugin(s): {', '.join(content)}")
+
     plugins = []
     skipped = []
-    bar = Progress(len(cfg.content), "Plugins", disable=not cfg.content)
+    bar = Progress(len(content), "Plugins", disable=not content)
     bar.__enter__()
-    for name in cfg.content:
+    for name in content:
         bar.update()
         if not name.lower().endswith(TES3_EXT):
             log(f"[~] Skipped (format not handled by tes3conv): {name}")
@@ -443,7 +454,7 @@ def cmd_prepare(args):
             plugins.append((p.name, json.load(f)))
     bar.close()
 
-    if not any(n.lower() == "morrowind.esm" for n, _ in plugins):
+    if not args.plugins and not any(n.lower() == "morrowind.esm" for n, _ in plugins):
         log("[ERROR] Morrowind.esm is not in content= (or could not be found).")
         return 1
 
@@ -478,6 +489,8 @@ def main():
     p.add_argument("--cache", default="data")
     p.add_argument("--out", default="output.json")
     p.add_argument("--paths", default="output_paths.json")
+    p.add_argument("--plugins", default="",
+                   help="liste (virgules) de plugins de content= a convertir ; vide = tout le load order")
     p.add_argument("-v", "--verbose", action="store_true", help="affiche tous les messages de suivi")
     p.set_defaults(func=cmd_prepare)
 

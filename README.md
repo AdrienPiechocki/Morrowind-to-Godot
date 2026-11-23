@@ -121,6 +121,23 @@ Import the `.glb` files into Godot. `manifest.json` lets you link exteriors and 
 - TGA textures are converted to PNG in `textures/` (`export/textures/` in full mode); the game and mod folders are never written to.
 - Animations show up as separate clips in the `AnimationPlayer` (one NLA track per sequence, e.g. `Idle2`, `SpellCast_Equip`).
 
+## Farlands / LODs
+
+`run_lod.sh` builds a low-quality version of a whole world (terrain + big assets only) from one
+or more plugins, to use as distant terrain in Godot:
+
+```bash
+./run_lod.sh                      # Morrowind.esm -> all of Vvardenfell
+./run_lod.sh --esm Morrowind.esm,Tribunal.esm --chunk 8 --terrain-step 4
+./run_lod.sh --grid "-3,-10:-1,-8" --min-size 600 --lod-tris 250
+```
+
+The world is split into `chunk x chunk` cells; each chunk gives `export_lod/lod_<cx>_<cy>.gltf`
+(one decimated terrain mesh + one texture atlas + sea plane + big `Static`/`Activator` models,
+decimated, without collisions). All chunks share the same origin: place them at (0,0,0).
+`manifest.json` lists the chunks and the cells they cover. Run `./run_lod.sh --help` for all options
+(`--terrain-step`, `--tex-px`, `--min-size`, `--lod-tris`, `--tex-max-side`, `--no-sea`, `--outdir`).
+
 ## Re-processing existing exports
 
 ```bash
