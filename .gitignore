@@ -2,6 +2,7 @@ mods/
 data/
 export/
 export_lod/
+godot_export/
 tes3conv
 openmw-tools/
 io_scene_mw/

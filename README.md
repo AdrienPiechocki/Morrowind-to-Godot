@@ -19,7 +19,7 @@ The pipeline reads your game data (through `openmw.cfg` or a *Data Files* folder
 | Tool | Purpose |
 |---|---|
 | Linux / macOS / Windows (bash) | `run.sh` is a bash script |
-| **Blender 4.4+** in your `PATH` | scene generation and export (script 7 uses the slotted actions API) |
+| **Blender 4.4+** in your `PATH` | only for NPCs/creatures (`--blender` pipeline); the default conversion does not need it |
 | **Python 3** | `openmw_cfg.py`, `mwlog.py` |
 | [`tes3conv`](https://github.com/Greatness7/tes3conv) | converts `.esm`/`.esp` to JSON |
 | `bsatool` (OpenMW tools) | extracts `.bsa` archives |
@@ -121,22 +121,54 @@ Import the `.glb` files into Godot. `manifest.json` lets you link exteriors and 
 - TGA textures are converted to PNG in `textures/` (`export/textures/` in full mode); the game and mod folders are never written to.
 - Animations show up as separate clips in the `AnimationPlayer` (one NLA track per sequence, e.g. `Idle2`, `SpellCast_Equip`).
 
+## Godot project folder
+
+`./run.sh` converts Morrowind data **directly** (pure Python, no Blender, seconds instead of minutes) for the
+`interior`, `exterior` and `full` modes: terrain, every placed object, textures (PNG), collisions
+(`-colonly` nodes) and the doors manifest. NPCs/creatures and their animations still need the Blender
+pipeline: it is used automatically when you answer `y` to "Include NPCs/creatures?", or with
+`./run.sh --blender`.
+
+Every `./run.sh` ends by assembling a ready-to-use folder, `godot_export/`:
+
+```
+godot_export/
+├── project.godot            # open it directly in Godot...
+└── morrowind/               # ...or copy this folder into your own project
+    ├── world.tscn           # main scene: exterior + farlands + sun + sky + free camera
+    ├── farlands.tscn        # all LOD chunks (if generated)
+    ├── scenes/interiors/    # one scene per interior (Arrival_* markers, door markers)
+    ├── models/world, models/lod   # glTF + textures
+    ├── scripts/fly_cam.gd   # right-click + WASD/ZQSD, Shift = fast
+    └── manifest.json
+```
+
+- Scene paths are `res://morrowind/...`: use `./run.sh --godot-name NAME` if you want another folder name.
+- Doors are `Marker3D` nodes with metadata (`target_scene`, `arrival_position`, `arrival_yaw`):
+  no gameplay is generated, plug your own door logic on them.
+- `--lod 1` (or answer `y` in `exterior` / `full` modes) also generates the farlands: the cells within
+  `--lod-radius N` (default 16, asked interactively) around the detailed grid, with a hole over the
+  detailed grid (no z-fighting). To tune the farlands, run `./run_lod.sh` separately, then
+  `python3 scripts/build_godot.py --help`.
+- Godot imports the glTF files the first time you open the project (can take a while).
+
 ## Farlands / LODs
 
-`run_lod.sh` builds a low-quality version of a whole world (terrain + big assets only) from one
-or more plugins, to use as distant terrain in Godot:
+`run_lod.sh` builds distant terrain for a whole world from one or more plugins, **without Blender**
+(NIF files are read in pure Python, a whole region takes seconds):
 
 ```bash
 ./run_lod.sh                      # Morrowind.esm -> all of Vvardenfell
 ./run_lod.sh --esm Morrowind.esm,Tribunal.esm --chunk 8 --terrain-step 4
-./run_lod.sh --grid "-3,-10:-1,-8" --min-size 600 --lod-tris 250
+./run_lod.sh --grid "-3,-10:-1,-8" --min-size 600
 ```
 
 The world is split into `chunk x chunk` cells; each chunk gives `export_lod/lod_<cx>_<cy>.gltf`
-(one decimated terrain mesh + one texture atlas + sea plane + big `Static`/`Activator` models,
-decimated, without collisions). All chunks share the same origin: place them at (0,0,0).
-`manifest.json` lists the chunks and the cells they cover. Run `./run_lod.sh --help` for all options
-(`--terrain-step`, `--tex-px`, `--min-size`, `--lod-tris`, `--tex-max-side`, `--no-sea`, `--outdir`).
+(one terrain mesh + one texture atlas + the big `Static`/`Activator` models, no water, no collisions).
+Models keep their original geometry (Morrowind meshes are already low-poly; Godot builds its own
+mesh LODs on import), only the size filter (`--min-size`) and the texture size (`--tex-max-side`)
+make them "low quality". All chunks share the same origin: place them at (0,0,0).
+`manifest.json` lists the chunks and the cells they cover. See `./run_lod.sh --help`.
 
 ## Re-processing existing exports
 

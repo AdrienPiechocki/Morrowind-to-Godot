@@ -5,9 +5,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Options : --anims <prefixes|all>  (ex. --anims idle) ; --npcs 0|1  (NPCs dans les scenes interior/exterior/full)
+#           --blender  (pipeline Blender : seul a gerer les NPCs/creatures ; par defaut conversion directe, sans Blender)
+#           --lod 0|1  (farlands : terrain + gros assets lointains, modes exterior/full)
+#           --lod-radius N  (nombre de cells de farlands autour de la zone detaillee, defaut 16)
+#           --godot-name NOM  (dossier du projet Godot genere, defaut "morrowind")
 #           -v | --verbose  (affiche tous les messages des scripts Python et de Blender)
 USER_ANIMS=""
 USER_NPCS=""
+USE_BLENDER=0     # --blender : force le pipeline Blender (NPCs/creatures, animations)
+USER_LOD=""       # --lod 0|1 : farlands (modes exterior/full)
+LOD_RADIUS=""     # --lod-radius N : cells de farlands autour de la zone detaillee
+GODOT_NAME="morrowind"   # --godot-name : nom du dossier dans le projet Godot
 VFLAG=""          # "--verbose" transmis aux scripts Python (vide = barre de progression seule)
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -17,6 +25,16 @@ while [ $# -gt 0 ]; do
         --npcs)    [ $# -ge 2 ] || { echo "[ERROR] --npcs attend 0 ou 1"; exit 1; }
                    USER_NPCS="$2"; shift 2 ;;
         --npcs=*)  USER_NPCS="${1#--npcs=}"; shift ;;
+        --blender) USE_BLENDER=1; shift ;;
+        --lod)     [ $# -ge 2 ] || { echo "[ERROR] --lod attend 0 ou 1"; exit 1; }
+                   USER_LOD="$2"; shift 2 ;;
+        --lod=*)   USER_LOD="${1#--lod=}"; shift ;;
+        --lod-radius) [ $# -ge 2 ] || { echo "[ERROR] --lod-radius attend un nombre de cells"; exit 1; }
+                   LOD_RADIUS="$2"; shift 2 ;;
+        --lod-radius=*) LOD_RADIUS="${1#--lod-radius=}"; shift ;;
+        --godot-name) [ $# -ge 2 ] || { echo "[ERROR] --godot-name attend un nom"; exit 1; }
+                   GODOT_NAME="$2"; shift 2 ;;
+        --godot-name=*) GODOT_NAME="${1#--godot-name=}"; shift ;;
         -v|--verbose) VFLAG="--verbose"; shift ;;
         *)         echo "[ERROR] Option inconnue : $1"; exit 1 ;;
     esac
@@ -34,7 +52,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-step()  { echo -e "\n${BLUE}[$1/9]${NC} $2"; }
+step()  { echo -e "\n${BLUE}[$1/10]${NC} $2"; }
 ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 fail()  { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
@@ -49,7 +67,7 @@ echo -e "${BLUE}========================================${NC}"
 [ -x "./tes3conv" ] || fail "tes3conv not found. Run install.sh first."
 [ -x "./openmw-tools/bsatool" ]  || fail "bsatool not found. Run install.sh first."
 [ -d "./io_scene_mw/" ] || fail "io_scene_mw not found. Run install.sh first."
-command -v blender &>/dev/null || fail "blender not found in PATH."
+command -v blender &>/dev/null || warn "blender not found in PATH (only needed for NPCs/creatures)."
 
 BSATOOL="./openmw-tools/bsatool"
 
@@ -475,15 +493,44 @@ case "$IMPORT_MODE" in
             WITH_NPCS="$USER_NPCS"
         elif [ "$IMPORT_MODE" = "full" ]; then
             WITH_NPCS=1
-            read -rp "Include NPCs/creatures? (slow) [Y/n] " USE_NPCS
-            case "$USE_NPCS" in n|N|no|NO) WITH_NPCS=0 ;; esac
+            WITH_NPCS=0
+            read -rp "Include NPCs/creatures? (needs the slow Blender pipeline) [y/N] " USE_NPCS
+            case "$USE_NPCS" in y|Y|yes|YES) WITH_NPCS=1 ;; esac
         else
-            read -rp "Include NPCs/creatures? (slow) [y/N] " USE_NPCS
+            read -rp "Include NPCs/creatures? (needs the slow Blender pipeline) [y/N] " USE_NPCS
             case "$USE_NPCS" in y|Y|yes|YES) WITH_NPCS=1 ;; esac
         fi
         ;;
 esac
 [ "$WITH_NPCS" = "1" ] || WITH_NPCS=0
+
+# Conversion directe (Python pur, secondes) sauf si Blender est necessaire : NPCs/creatures, --blender
+USE_DIRECT=1
+if [ "$USE_BLENDER" = "1" ] || [ "$IMPORT_MODE" = "npc" ] || [ "$WITH_NPCS" = "1" ]; then
+    USE_DIRECT=0
+    command -v blender &>/dev/null || fail "blender not found in PATH (needed for NPCs/creatures)."
+fi
+
+# Farlands (LODs) : terrain + gros assets en basse qualite autour de la zone detaillee.
+WITH_LOD=0
+if [ "$IMPORT_MODE" = "exterior" ] || [ "$IMPORT_MODE" = "full" ]; then
+    if [ -n "$USER_LOD" ]; then
+        WITH_LOD="$USER_LOD"
+    else
+        read -rp "Generate farlands (low-quality LOD around the detailed area)? [y/N] " USE_LOD
+        case "$USE_LOD" in y|Y|yes|YES) WITH_LOD=1 ;; esac
+    fi
+    if [ "$WITH_LOD" = "1" ] && [ -z "$OPENMW_CFG" ]; then
+        warn "Farlands need openmw.cfg (legacy flow): skipped."
+        WITH_LOD=0
+    fi
+    if [ "$WITH_LOD" = "1" ] && [ -z "$LOD_RADIUS" ]; then
+        read -rp "Farlands: how many cells around the detailed area? [16] " LOD_RADIUS
+    fi
+    LOD_RADIUS="${LOD_RADIUS:-16}"
+    case "$LOD_RADIUS" in ''|*[!0-9]*) fail "--lod-radius must be a positive integer (got '$LOD_RADIUS')" ;; esac
+fi
+[ "$WITH_LOD" = "1" ] || WITH_LOD=0
 
 # Animations des NPCs conservees (prefixes separes par des virgules, ou "all") :
 # idle par defaut des qu'il y a des NPCs dans la scene.
@@ -495,6 +542,22 @@ fi
 
 # ==========================================
 # 7. Conversion Blender (scripts 1-6)
+# ==========================================
+# 7-8. Conversion
+# ==========================================
+if [ "$USE_DIRECT" = "1" ]; then
+    step 7 "Direct conversion (no Blender)"
+    WORLD_ARGS=(--json output.json --meshes "$MESHES_ARG" --textures "$TEXTURES_ARG" --outdir "$SCRIPT_DIR/export")
+    case "$IMPORT_MODE" in
+        full)     WORLD_ARGS+=(--mode full --grid "$GRID") ;;
+        exterior) WORLD_ARGS+=(--mode exterior --grid "$GRID") ;;
+        *)        WORLD_ARGS+=(--mode interior --cell "$CELL_NAME") ;;
+    esac
+    [ -n "$VFLAG" ] && WORLD_ARGS+=(--verbose)
+    python3 scripts/build_world.py "${WORLD_ARGS[@]}" || fail "Direct conversion failed."
+    step 8 "Export"
+    ok "glTF files written in export/ (no Blender step)."
+else
 # ==========================================
 step 7 "Blender conversion"
 
@@ -573,7 +636,7 @@ if [ "$IMPORT_MODE" = "full" ]; then
         N=$((N + 1))
         echo "[..] [$N/$TOTAL] $stem"
         post_process "$EXPORT_DIR/$stem.blend" "$EXPORT_DIR/$stem.glb" --anims "$FULL_ANIMS"
-        [ -f "$EXPORT_DIR/$stem.glb" ] || warn "$stem.glb not generated (see export/post.log)"
+        [ -f "$EXPORT_DIR/$stem.gltf" ] || [ -f "$EXPORT_DIR/$stem.glb" ] || warn "$stem not exported (see export/post.log)"
     done
     unset POST_LOG
     ok "$TOTAL file(s) processed (Blender log: export/post.log)."
@@ -595,13 +658,51 @@ else
     [ -n "$SCENE_ANIMS" ] && EXPORT_ARGS+=(--anims "$SCENE_ANIMS")
     [ -n "$VFLAG" ] && EXPORT_ARGS+=(--verbose)
     bl --background --python scripts/export_glb.py -- ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
-    ok "morrowind.glb generated."
+    ok "morrowind.gltf generated."
+fi
+
 fi
 
 # ==========================================
-# 9. Cleanup and summary
+# 9. Farlands + Godot folder
 # ==========================================
-step 9 "Cleanup"
+step 9 "Godot project folder"
+GODOT_DIR="$SCRIPT_DIR/godot_export"
+GODOT_ARGS=(--out "$GODOT_DIR" --name "$GODOT_NAME")
+
+if [ "$WITH_LOD" = "1" ]; then
+    # Zone des farlands = zone detaillee elargie de LOD_RADIUS cells (le trou reste sur la zone detaillee)
+    LOD_GRID=$(python3 - "$GRID" "$LOD_RADIUS" <<'PY'
+import re, sys
+n = [int(v) for v in re.findall(r"-?\d+", sys.argv[1])]
+if len(n) == 2:
+    n *= 2
+r = int(sys.argv[2])
+x1, y1, x2, y2 = min(n[0], n[2]), min(n[1], n[3]), max(n[0], n[2]), max(n[1], n[3])
+print(f"{x1 - r},{y1 - r}:{x2 + r},{y2 + r}")
+PY
+)
+    echo "[..] Generating farlands ($LOD_RADIUS cells around the detailed grid: $LOD_GRID)..."
+    ./run_lod.sh --reuse-data --esm all --grid "$LOD_GRID" --exclude-grid "$GRID" --outdir "$SCRIPT_DIR/export_lod" $VFLAG \
+        || warn "Farlands generation failed: continuing without."
+    [ -f "$SCRIPT_DIR/export_lod/manifest.json" ] && GODOT_ARGS+=(--lod "$SCRIPT_DIR/export_lod")
+fi
+
+if [ "$IMPORT_MODE" = "full" ] || [ "$USE_DIRECT" = "1" ]; then
+    GODOT_ARGS+=(--export "$SCRIPT_DIR/export")
+else
+    SINGLE="$SCRIPT_DIR/morrowind.gltf"
+    [ -f "$SINGLE" ] || SINGLE="$SCRIPT_DIR/morrowind.glb"
+    GODOT_ARGS+=(--single "$SINGLE" --single-textures "$SCRIPT_DIR/textures_gltf")
+    [ -n "$GRID" ] && GODOT_ARGS+=(--single-grid "$GRID")
+fi
+python3 scripts/build_godot.py "${GODOT_ARGS[@]}" || warn "Godot folder generation failed."
+ok "Godot folder: $GODOT_DIR/$GODOT_NAME"
+
+# ==========================================
+# 10. Cleanup and summary
+# ==========================================
+step 10 "Cleanup"
 find . -type f -regex "\./output.*" -exec rm -f {} \;
 
 echo ""
@@ -609,16 +710,23 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN} Conversion complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
+echo "Godot project: godot_export/$GODOT_NAME/  (copy it into your Godot project, open world.tscn)"
+echo "               or open godot_export/ directly as a Godot project."
+echo ""
 echo "Generated files:"
-if [ "$IMPORT_MODE" = "full" ]; then
-    echo "  - export/exterior.blend / exterior.glb"
-    echo "  - export/interiors/*.blend / *.glb  ($(find "$SCRIPT_DIR/export/interiors" -name '*.glb' 2>/dev/null | wc -l) interior(s))"
+if [ "$USE_DIRECT" = "1" ]; then
+    echo "  - export/exterior.gltf, export/interiors/*.gltf, export/manifest.json (direct conversion, no Blender)"
+    echo ""
+    echo "godot_export/ already contains the assembled scenes (world.tscn + interiors)."
+elif [ "$IMPORT_MODE" = "full" ]; then
+    echo "  - export/exterior.blend / exterior.gltf"
+    echo "  - export/interiors/*.blend / *.gltf  ($(find "$SCRIPT_DIR/export/interiors" -name '*.gltf' 2>/dev/null | wc -l) interior(s))"
     echo "  - export/manifest.json  (doors: where each interior connects)"
     echo ""
-    echo "Import the .glb files into Godot; manifest.json links exteriors and interiors."
+    echo "godot_export/ already contains the assembled scenes (world.tscn + interiors)."
 else
     echo "  - morrowind.blend"
-    echo "  - morrowind.glb"
+    echo "  - morrowind.gltf"
     echo ""
-    echo "Import morrowind.glb into Godot."
+    echo "godot_export/ already contains the assembled scene (world.tscn)."
 fi
