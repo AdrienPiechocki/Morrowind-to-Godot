@@ -6,8 +6,8 @@ shader_type sky;
 uniform vec3 sun_dir = vec3(0.3, 0.8, 0.5);        // direction VERS le soleil
 uniform vec3 masser_dir = vec3(-0.5, 0.6, 0.2);
 uniform vec3 secunda_dir = vec3(0.4, 0.5, -0.6);
-uniform float masser_radius = 0.035;               // rayon angulaire (radians)
-uniform float secunda_radius = 0.022;
+uniform float masser_radius = 0.05;               // rayon angulaire (radians)
+uniform float secunda_radius = 0.032;
 
 uniform float cloud_density : hint_range(0.0, 1.0) = 0.43;
 uniform float cloud_min : hint_range(0.0, 1.0) = 0.33;
@@ -47,7 +47,7 @@ float fbm(vec2 p) {
 }
 
 // Disque lunaire : couleur eclairee (phase) + opacite
-vec4 moon(vec3 dir, vec3 m, float radius, sampler2D tex, float night) {
+vec4 moon(vec3 dir, vec3 m, float radius, sampler2D tex, float night, float gain) {
 	float c = dot(dir, m);
 	if (c < cos(radius * 1.2)) return vec4(0.0);
 	vec3 t = normalize(cross(vec3(0.0, 1.0, 0.0), m));
@@ -60,8 +60,8 @@ vec4 moon(vec3 dir, vec3 m, float radius, sampler2D tex, float night) {
 	vec3 n = normalize(t * q.x + b * q.y + m * z);            // normale de la sphere (monde)
 	vec2 uv = vec2(atan(q.x, z) / (2.0 * PI) + 0.5, asin(clamp(q.y, -1.0, 1.0)) / PI + 0.5);
 	vec3 albedo = texture(tex, uv).rgb;
-	float lit = clamp(dot(n, sun_dir) * 1.6 + 0.05, 0.0, 1.0);      // phase de la lune
-	vec3 col = albedo * (lit * 1.8 + 0.02);
+	float lit = smoothstep(-0.12, 0.55, dot(n, sun_dir));           // phase de la lune
+	vec3 col = albedo * gain * (lit * 1.8 + 0.07);                  // + lumiere cendree : la face sombre reste visible
 	return vec4(col, edge * clamp(night * 1.4 + 0.15, 0.0, 1.0));
 }
 
@@ -90,20 +90,25 @@ void sky() {
 	float mie = hg_phase(cos_s, mie_g) * 0.25;
 	col += vec3(1.0, 0.85, 0.65) * mie * day * (1.0 - overcast * 0.7);
 	// sous l'horizon : sombre
-	col = mix(col, horizon * 0.35, smoothstep(0.0, -0.25, dir.y));
+	// (meme couleur que le brouillard de l'horizon : pas de bande sombre ou le terrain s'arrete)
+	col = mix(col, horizon * mix(1.0, 0.55, smoothstep(-0.05, -0.7, dir.y)), smoothstep(0.0, -0.04, dir.y));
 
 	// ---- voie lactee / etoiles ----
 	if (dir.y > -0.05 && night > 0.0) {
 		vec2 suv = vec2(atan(dir.x, dir.z) / (2.0 * PI) + 0.5, acos(clamp(dir.y, -1.0, 1.0)) / PI);
-		vec3 stars = texture(star_map, suv).rgb;
+		// couture de atan() : on prend la parametrisation decalee de 0.5 la ou elle est continue
+		vec2 suv2 = vec2(fract(suv.x + 0.5), suv.y);
+		vec2 gx = dFdx(suv), gy = dFdy(suv), gx2 = dFdx(suv2), gy2 = dFdy(suv2);
+		bool ok = dot(gx, gx) + dot(gy, gy) <= dot(gx2, gx2) + dot(gy2, gy2);
+		vec3 stars = textureGrad(star_map, suv, ok ? gx : gx2, ok ? gy : gy2).rgb;
 		float tw = 1.0 + twinkle * 0.35 * (hash12(floor(suv * 1500.0)) - 0.5) * sin(TIME * 3.0 + hash12(floor(suv * 700.0)) * 40.0);
 		col += stars * star_brightness * 2.2 * night * tw * (1.0 - overcast);
 	}
 
 	// ---- lunes ----
-	vec4 mm = moon(dir, masser_dir, masser_radius, masser_tex, night);
+	vec4 mm = moon(dir, masser_dir, masser_radius, masser_tex, night, 3.2);
 	col = mix(col, mm.rgb, mm.a * (1.0 - overcast * 0.9));
-	vec4 sm = moon(dir, secunda_dir, secunda_radius, secunda_tex, night);
+	vec4 sm = moon(dir, secunda_dir, secunda_radius, secunda_tex, night, 1.0);
 	col = mix(col, sm.rgb, sm.a * (1.0 - overcast * 0.9));
 
 	// ---- soleil ----

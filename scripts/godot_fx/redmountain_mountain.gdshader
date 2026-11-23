@@ -9,6 +9,7 @@ uniform float size = 896.87;                 // cote du plan (m)
 uniform vec3 tint : source_color = vec3(0.243, 0.380, 0.596);
 uniform vec3 fog_color = vec3(0.58, 0.72, 0.88);
 uniform float haze_density = 0.00035;
+uniform float haze_max = 0.76;               // brume maximale (garde une silhouette tres douce)
 uniform float brightness = 1.0;
 uniform float light = 1.0;                   // 0 nuit .. 1 jour
 uniform float presence : hint_range(0.0, 1.0) = 0.5;
@@ -63,10 +64,11 @@ void fragment() {
 	if (m < 0.01) discard;
 	float haze = 1.0 - exp(-dist_cam * haze_density);
 	// le bas de l'image (pied de la montagne) se fond dans la brume du monde, sans bord visible
-	float low = smoothstep(0.53, 0.42, quad_uv.y);
+	float low = smoothstep(0.55, 0.40, quad_uv.y);
 	vec3 col = tint * brightness * (0.25 + 0.75 * light);
-	col = mix(col, fog_color, clamp(haze * 0.6 + low, 0.0, 1.0));
+	// meme brume exponentielle que le terrain (Environment.fog_density) : la montagne se fond comme lui
+	col = mix(col, fog_color, clamp(max(haze, low), 0.0, haze_max + (1.0 - haze_max) * low));
 	ALBEDO = col;
 	float fade = pow(1.0 - smoothstep(fade_start, fade_end, dist_cam), 1.5);     // plus loin = plus transparent
-	ALPHA = smoothstep(0.02, 0.45, m) * (1.0 - low) * fade;      // opaque : cache la fumee derriere elle
+	ALPHA = smoothstep(0.02, 0.45, m) * fade;      // opaque : cache la fumee derriere elle
 }

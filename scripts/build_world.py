@@ -96,7 +96,7 @@ def build_exterior(task):
         if land is not None:
             pos, nrm, col, uv, tris, _ = mwterrain.cell_geometry(land, 1)
             ti = mwterrain.decode_texture_grid(land)
-            px = G["land_tex"].bake(ti) if ti is not None else None
+            px = G["land_tex"].bake(ti, land.get("_plugin")) if ti is not None else None
             if px is None:
                 px = np.empty((16 * T, 16 * T, 4), dtype=np.float32)
                 px[:] = mwterrain.DEFAULT_COLOR
@@ -197,7 +197,7 @@ def main():
         if t == "Landscape" and r.get("grid"):
             landscape[(int(r["grid"][0]), int(r["grid"][1]))] = r
         elif t == "LandscapeTexture":
-            ltex[int(r.get("index", 0))] = r.get("file_name", "")
+            mwterrain.register_ltex(ltex, r)
         elif t == "Cell":
             if L.cell_is_interior(r):
                 if r.get("name"):

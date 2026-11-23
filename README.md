@@ -166,7 +166,7 @@ only the pack's *textures* (stars, moons, ripples) are copied, with its licence,
 
 | Pack shader | In Godot |
 |---|---|
-| VAIO (sky, clouds, stars, moons, fog) | `sky.gdshader` + `daynight.gd`: day/night cycle, Masser and Secunda with phases, Milky Way, clouds, atmospheric fog (`T` run/stop time, `[` `]` ±1 h) |
+| VAIO (sky, clouds, stars, moons, fog) | `sky.gdshader` + `daynight.gd`: day/night cycle, Masser and Secunda (orbiting around Masser) with phases, Milky Way, clouds, atmospheric fog (`T` run/stop time, `[` `]` ±1 h) |
 | tonemap (filmic + bloom) | `Environment`: filmic tonemap, glow, contrast/saturation |
 | HBAO | `Environment`: SSAO |
 | godrays | `Environment`: volumetric fog lit by the sun |
@@ -210,6 +210,12 @@ Models keep their original geometry (Morrowind meshes are already low-poly; Godo
 mesh LODs on import), only the size filter (`--min-size`) and the texture size (`--tex-max-side`)
 make them "low quality". All chunks share the same origin: place them at (0,0,0).
 `manifest.json` lists the chunks and the cells they cover. See `./run_lod.sh --help`.
+
+**Performance.** Copies of the same model are not duplicated nodes: they are listed in `lod_<cx>_<cy>.inst.json` and `farlands.gd`
+turns them into `MultiMesh`es at load (one draw call per material instead of one per copy). The minimum asset size grows with the
+distance to the detailed grid (`--size-growth`, 0.35 per cell by default; 0 = constant), farlands cast no shadows and chunks beyond the
+fog (`DayNight.view_distance` + 900 m) are hidden. On the test area: ~11.8k -> ~3.1k draw calls, ~46k -> ~5k objects.
+Regenerate the farlands (`./run.sh` or `./run_lod.sh`) to benefit.
 
 ## Re-processing existing exports
 

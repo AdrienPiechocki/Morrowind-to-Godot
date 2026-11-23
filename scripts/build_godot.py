@@ -82,7 +82,7 @@ def copy_assets(src, dst):
     """Copie glTF/bin/images en conservant l'arborescence (pas de .blend, logs...)."""
     n = 0
     for f in Path(src).rglob("*"):
-        if f.is_file() and f.suffix.lower() in ASSET_EXT:
+        if f.is_file() and (f.suffix.lower() in ASSET_EXT or f.name.endswith(".inst.json")):
             target = Path(dst) / f.relative_to(src)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, target)
@@ -787,7 +787,9 @@ def main():
         lman = json.loads(lman_path.read_text(encoding="utf-8")) if lman_path.is_file() else {}
         manifest_out["lod"] = lman
         far = Scene()
-        far.node("Farlands", "Node3D")
+        shutil.copy2(FX_SRC / "farlands.gd", base / "scripts" / "farlands.gd")
+        far_script = far.ext_resource("Script", f"{res}/scripts/farlands.gd")
+        far.node("Farlands", "Node3D", props={"script": f'ExtResource("{far_script}")'})
         used = set()
         for c in lman.get("chunks", []):
             g = gltf_file(base / "models" / "lod" / Path(c["file"]).with_suffix(""))

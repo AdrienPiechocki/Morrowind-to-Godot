@@ -323,6 +323,10 @@ def merge_plugins(plugins):
             if rtype == "Header":
                 continue
             if rtype != "Cell":
+                if rtype in ("LandscapeTexture", "Landscape"):
+                    # Les indices de texture d'un LAND designent les LTEX DU MEME PLUGIN : sans cette marque,
+                    # les LTEX de TR / Cyr / Sky ecrasent ceux de Morrowind.esm (textures fausses ou blanches).
+                    rec["_plugin"] = me
                 other.append(rec)
                 continue
 

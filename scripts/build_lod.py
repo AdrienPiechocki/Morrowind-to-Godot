@@ -120,6 +120,17 @@ def add_model_mesh(builder, key, model, needed):
     return builder.add_mesh(key, prims)
 
 
+def min_size_at(gx, gy):
+    """Taille mini d'un asset a cette cell : croit avec la distance a la zone detaillee (le loin, sous la brume,
+    n'a pas besoin des petits objets : bien moins de draw calls)."""
+    ex = G.get("excluded")
+    if not ex or not G.get("size_growth"):
+        return G["min_size"]
+    dx = max(ex[0] - gx, 0, gx - ex[2])
+    dy = max(ex[1] - gy, 0, gy - ex[3])
+    return G["min_size"] * (1.0 + G["size_growth"] * max(dx, dy))
+
+
 def build_chunk(task):
     cx, cy = task
     t0 = time.time()
@@ -141,7 +152,7 @@ def build_chunk(task):
         for gx, gy, land in land_cells:
             lx, ly = gx - cx * chunk, gy - cy * chunk
             ti = mwterrain.decode_texture_grid(land)
-            px = G["land_tex"].bake(ti) if ti is not None else None
+            px = G["land_tex"].bake(ti, land.get("_plugin")) if ti is not None else None
             if px is None:
                 px = np.empty((cell_px, cell_px, 4), dtype=np.float32)
                 px[:] = mwterrain.DEFAULT_COLOR
@@ -171,6 +182,7 @@ def build_chunk(task):
 
     # ---- assets ----
     mesh_ids = {}
+    inst = {}                 # cle de maillage -> [(t, q, s)] : instancies en un seul noeud (1 draw call / materiau)
     placed = 0
     for gx, gy, refs in cells:
         for rid, tr, rot, scale in refs:
@@ -179,16 +191,32 @@ def build_chunk(task):
                 continue
             key = rec.replace("\\", "/").lower()
             model = get_model(rec)
-            if model is None or model.size * scale < G["min_size"]:
+            if model is None or model.size * scale < min_size_at(gx, gy):
                 continue
             if key not in mesh_ids:
                 mesh_ids[key] = add_model_mesh(builder, key, model, needed)
-            t, q, s = mwgltf.ref_node(tr, rot, scale)
-            builder.add_node(mesh_ids[key], None, t, q, s)
+            inst.setdefault(key, []).append(mwgltf.ref_node(tr, rot, scale))
             placed += 1
+    # Un noeud "Inst_<n>" par modele. Instance unique : placee dans le glTF. Plusieurs instances : leurs
+    # transformations vont dans lod_<cx>_<cy>.inst.json et farlands.gd en fait un MultiMesh (1 draw call
+    # par materiau, quel que soit le nombre de copies) : Godot 4.7 n'importe pas EXT_mesh_gpu_instancing.
+    multi = {}
+    for key, lst in inst.items():
+        if len(lst) == 1:
+            builder.add_node(mesh_ids[key], None, *lst[0])
+        else:
+            nm = f"Inst_{len(multi)}"
+            builder.add_node(mesh_ids[key], nm)
+            multi[nm] = [round(float(v), 5) for t, q, sc in lst for v in (*t, *q, sc)]
 
     stem = f"lod_{cx}_{cy}"
     builder.write(os.path.join(G["outdir"], stem))
+    inst_path = os.path.join(G["outdir"], stem + ".inst.json")
+    if multi:
+        with open(inst_path, "w", encoding="utf-8") as f:
+            json.dump(multi, f, separators=(",", ":"))
+    elif os.path.exists(inst_path):
+        os.remove(inst_path)
     gxs = [gx for gx, _, _ in cells]
     gys = [gy for _, gy, _ in cells]
     return {"name": stem, "file": stem + ".gltf", "chunk": [cx, cy],
@@ -229,6 +257,8 @@ def main():
     ap.add_argument("--terrain-step", type=int, default=4)
     ap.add_argument("--tex-px", type=int, default=128)
     ap.add_argument("--min-size", type=float, default=400.0)
+    ap.add_argument("--size-growth", type=float, default=0.35,
+                    help="la taille mini augmente de min-size*N par cell de distance a la zone detaillee (0 = constante)")
     ap.add_argument("--tex-max-side", type=int, default=256)
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -241,7 +271,7 @@ def main():
     outdir = os.path.abspath(a.outdir)
     os.makedirs(outdir, exist_ok=True)
     for old in os.listdir(outdir):                       # sorties precedentes de ce dossier
-        if re.fullmatch(r"lod_-?\d+_-?\d+\.(gltf|bin)", old):
+        if re.fullmatch(r"lod_-?\d+_-?\d+\.(gltf|bin|inst\.json)", old):
             os.remove(os.path.join(outdir, old))
 
     t0 = time.time()
@@ -258,7 +288,7 @@ def main():
         elif t == "Landscape" and r.get("grid"):
             landscape[(int(r["grid"][0]), int(r["grid"][1]))] = r
         elif t == "LandscapeTexture":
-            ltex[int(r.get("index", 0))] = r.get("file_name", "")
+            mwterrain.register_ltex(ltex, r)
         elif t == "Cell" and not cell_is_interior(r):
             g = (r.get("data") or {}).get("grid") or [0, 0]
             cells[(int(g[0]), int(g[1]))] = r             # le dernier plugin gagne
@@ -290,7 +320,7 @@ def main():
     tex_index = mwassets.AssetIndex([d for d in a.textures.split(os.pathsep) if d])
 
     G.update(chunk=a.chunk, terrain_step=a.terrain_step, tile_px=max(a.tex_px // 16, 1),
-             min_size=a.min_size, tex_side=a.tex_max_side, outdir=outdir, chunks=chunks,
+             min_size=a.min_size, size_growth=a.size_growth, excluded=excluded, tex_side=a.tex_max_side, outdir=outdir, chunks=chunks,
              landscape=landscape, records=records, cells=cells_by_grid, mesh_index=mesh_index, tex_index=tex_index,
              land_tex=mwterrain.LandTextures(ltex, tex_index, max(a.tex_px // 16, 1)), models={})
 

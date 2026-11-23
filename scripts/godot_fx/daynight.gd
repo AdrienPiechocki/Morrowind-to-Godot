@@ -8,6 +8,7 @@ extends Node
 @export var day_length := 0.0                 # secondes reelles pour 24 h ; 0 = temps fige
 @export var sun_energy := 1.5
 @export var moon_energy := 0.14
+@export var secunda_orbit := 0.0873           # rad (5 deg) : distance angulaire Secunda <-> Masser
 @export var view_distance := 0.0              # m : distance ou tout disparait dans la brume (0 = brume legere par defaut)
 @export var sun: DirectionalLight3D
 @export var world_environment: WorldEnvironment
@@ -49,7 +50,11 @@ func _update() -> void:
 	var a := (time_of_day - 6.0) / 12.0 * PI        # lever a 6 h, coucher a 18 h
 	var sun_dir := _dir(a, 0.28)
 	var masser_dir := _dir(a + 2.35, -0.35)
-	var secunda_dir := _dir(a * 0.93 + 4.3, 0.45)
+	# Secunda orbite autour de Masser (ecart angulaire fixe)
+	var mt := masser_dir.cross(Vector3.UP).normalized()
+	var mb := masser_dir.cross(mt)
+	var phi := a * 1.7 + 0.8
+	var secunda_dir := (masser_dir * cos(secunda_orbit) + (mt * cos(phi) + mb * sin(phi)) * sin(secunda_orbit)).normalized()
 	var sun_h := sun_dir.y
 	var day := smoothstep(-0.12, 0.22, sun_h)
 	var night := 1.0 - smoothstep(-0.25, 0.05, sun_h)

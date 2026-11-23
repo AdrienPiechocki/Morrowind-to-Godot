@@ -135,5 +135,5 @@ func _process(_delta: float) -> void:
 		_mountain_mat.set_shader_parameter("fade_start", fade_start_m)
 		_mountain_mat.set_shader_parameter("fade_end", fade_end_m)
 		_mountain_mat.set_shader_parameter("light", light)
-		_mountain_mat.set_shader_parameter("fog_color", Vector3(fog_col.r, fog_col.g, fog_col.b))
-		_mountain_mat.set_shader_parameter("haze_density", haze)
+		_mountain_mat.set_shader_parameter("fog_color", Vector3(fog_col.r, fog_col.g, fog_col.b) * 0.95)
+		_mountain_mat.set_shader_parameter("haze_density", maxf(haze, _env.fog_density if _env else 0.0))

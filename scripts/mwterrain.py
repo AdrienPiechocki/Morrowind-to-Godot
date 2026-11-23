@@ -123,8 +123,18 @@ def cell_geometry(land, step):
 
 # ---------- texture ----------
 
+def register_ltex(ltex_map, rec):
+    """Ajoute un record LandscapeTexture : cle (plugin, index), plus (None, index) = dernier plugin (repli)."""
+    idx = int(rec.get("index", 0))
+    name = rec.get("file_name", "")
+    ltex_map[(rec.get("_plugin"), idx)] = name
+    ltex_map[(None, idx)] = name
+
+
 class LandTextures:
-    """Bake de la texture d'une cell (melange facon moteur des couches de terrain)."""
+    """Bake de la texture d'une cell (melange facon moteur des couches de terrain).
+    ltex_map : {(plugin, index): fichier} (voir register_ltex). Les indices d'un LAND
+    se resolvent dans les LTEX du plugin qui contient ce LAND, comme dans le moteur."""
 
     def __init__(self, ltex_map, texture_index, tile_px):
         self.ltex_map = ltex_map
@@ -132,11 +142,15 @@ class LandTextures:
         self.T = tile_px
         self.layers = {}
 
-    def _layer(self, vtex):
-        if vtex in self.layers:
-            return self.layers[vtex]
+    def _layer(self, vtex, plugin=None):
+        key = (plugin, vtex)
+        if key in self.layers:
+            return self.layers[key]
         T = self.T
-        name = "_land_default.dds" if vtex == 0 else self.ltex_map.get(vtex - 1, "")
+        if vtex == 0:
+            name = "_land_default.dds"
+        else:
+            name = self.ltex_map.get((plugin, vtex - 1)) or self.ltex_map.get((None, vtex - 1), "")
         px = None
         path = self.index.find_texture(name) if name else None
         if path:
@@ -148,7 +162,7 @@ class LandTextures:
                 px = np.flipud(np.asarray(img, dtype=np.float32) / 255.0)     # lignes de bas en haut
             except Exception:
                 px = None
-        self.layers[vtex] = px
+        self.layers[key] = px
         return px
 
     @staticmethod
@@ -163,7 +177,7 @@ class LandTextures:
         a10, a11 = A[y0 + 1, x0], A[y0 + 1, x0 + 1]
         return (a00 * (1 - fx) + a01 * fx) * (1 - fy) + (a10 * (1 - fx) + a11 * fx) * fy
 
-    def bake(self, ti):
+    def bake(self, ti, plugin=None):
         """ti : grille 16x16 -> (16T, 16T, 4) float32, lignes de bas en haut."""
         T = self.T
         vals, counts = np.unique(ti, return_counts=True)
@@ -171,7 +185,7 @@ class LandTextures:
         order = sorted(zip(vals.tolist(), counts.tolist()), key=lambda vc: (-vc[1], vc[0]))
         out = None
         for vt, _ in order:
-            tex = self._layer(vt)
+            tex = self._layer(vt, plugin)
             if tex is None:
                 tex = np.empty((T, T, 4), dtype=np.float32)
                 tex[:] = DEFAULT_COLOR
