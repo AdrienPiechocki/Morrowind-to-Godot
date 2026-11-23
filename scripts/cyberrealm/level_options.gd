@@ -23,8 +23,6 @@ var _hour_label: Label = null
 var _rain_btn: CheckButton = null
 var _fog_slider: HSlider = null
 var _fog_label: Label = null
-var _glare_slider: HSlider = null
-var _glare_label: Label = null
 var _cloud_slider: HSlider = null
 var _cloud_label: Label = null
 var _info: Label = null
@@ -166,22 +164,6 @@ func _show_page() -> void:
 	c.add_child(_cloud_label)
 	c.add_child(_cloud_slider)
 
-	# ── Halo du soleil ──
-	c.add_child(_pm.call("_make_row_label", "Sun glare"))
-	_glare_label = Label.new()
-	_glare_label.add_theme_font_size_override("font_size", 14)
-	_glare_slider = HSlider.new()
-	_glare_slider.min_value = 0.0
-	_glare_slider.max_value = 3.0
-	_glare_slider.step = 0.05
-	_glare_slider.custom_minimum_size = Vector2(0, 28)
-	_glare_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var glare := get_parent().get_node_or_null("SunGlare")
-	_glare_slider.value = float(glare.get("glare_intensity")) if glare != null else 1.0
-	_update_glare_label()
-	c.add_child(_glare_label)
-	c.add_child(_glare_slider)
-
 	# ── Pluie ──
 	_rain_btn = CheckButton.new()
 	_rain_btn.text = "Rain"
@@ -195,7 +177,6 @@ func _show_page() -> void:
 	if host:
 		_fog_slider.value_changed.connect(_on_changed)
 		_cloud_slider.value_changed.connect(_on_changed)
-		_glare_slider.value_changed.connect(_on_changed)
 		_time_mode.item_selected.connect(_on_changed)
 		_hour_slider.value_changed.connect(_on_changed)
 		_rain_btn.toggled.connect(_on_changed)
@@ -206,8 +187,6 @@ func _refresh_enabled() -> void:
 	var host := _is_host()
 	_time_mode.disabled = not host
 	_rain_btn.disabled = not host
-	_glare_slider.editable = host
-	_glare_slider.modulate.a = 1.0 if host else 0.5
 	_cloud_slider.editable = host
 	_cloud_slider.modulate.a = 1.0 if host else 0.5
 	# Brume : automatique (selon l'heure) en heure réelle ; curseur seulement en heure fixe.
@@ -230,14 +209,10 @@ func _update_fog_label() -> void:
 	else:
 		_fog_label.text = "Fog: x%.1f%s" % [_fog_slider.value, " (off)" if _fog_slider.value <= 0.0 else ""]
 
-func _update_glare_label() -> void:
-	_glare_label.text = "Glare: x%.2f%s" % [_glare_slider.value, " (off)" if _glare_slider.value <= 0.0 else ""]
-
 func _update_cloud_label() -> void:
 	_cloud_label.text = "Clouds: %d%%" % int(round(_cloud_slider.value * 100.0))
 
 func _on_changed(_v = null) -> void:
-	_update_glare_label()
 	_update_cloud_label()
 	_refresh_enabled()
 	_update_hour_label()
@@ -248,7 +223,7 @@ func _on_changed(_v = null) -> void:
 func _state_from_ui() -> Dictionary:
 	return {"fixed": _time_mode.selected == 1, "hour": _hour_slider.value, "rain": _rain_btn.button_pressed,
 		"fog": _fog_slider.value,
-		"cloud": _cloud_slider.value, "glare": _glare_slider.value}
+		"cloud": _cloud_slider.value}
 
 # ── Application + réseau ─────────────────────────────────────────────
 
@@ -264,9 +239,6 @@ func _apply(state: Dictionary) -> void:
 			dn.set("time_of_day", clampf(float(state.get("hour", 12.0)), 0.0, 24.0))
 	if dn != null and state.has("fog"):
 		dn.set("fog_thickness", clampf(float(state["fog"]), 0.0, 5.0))
-	var glare_node := get_parent().get_node_or_null("SunGlare")
-	if glare_node != null and state.has("glare"):
-		glare_node.set("glare_intensity", clampf(float(state["glare"]), 0.0, 3.0))
 	if dn != null and state.has("cloud"):
 		dn.set("cloud_density", clampf(float(state["cloud"]), 0.0, 1.0))
 	if weather != null:
@@ -284,10 +256,8 @@ func _net_apply(state: Dictionary) -> void:
 	var h = state.get("hour", 12.0)
 	var f = state.get("fog", 1.0)
 	var cl = state.get("cloud", 0.43)
-	var gl = state.get("glare", 1.0)
 	_apply({"fixed": state.get("fixed", false) == true,
 		"hour": float(h) if typeof(h) == TYPE_FLOAT or typeof(h) == TYPE_INT else 12.0,
 		"rain": state.get("rain", false) == true,
 		"fog": float(f) if typeof(f) == TYPE_FLOAT or typeof(f) == TYPE_INT else 1.0,
-		"cloud": float(cl) if typeof(cl) == TYPE_FLOAT or typeof(cl) == TYPE_INT else 0.43,
-		"glare": float(gl) if typeof(gl) == TYPE_FLOAT or typeof(gl) == TYPE_INT else 1.0})
+		"cloud": float(cl) if typeof(cl) == TYPE_FLOAT or typeof(cl) == TYPE_INT else 0.43})

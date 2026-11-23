@@ -98,11 +98,11 @@ class GltfBuilder:
         pbr = {"baseColorFactor": [float(c) for c in color], "metallicFactor": 0.0, "roughnessFactor": 1.0}
         if texture_uri:
             pbr["baseColorTexture"] = {"index": self.texture(texture_uri)}
-        # TOUJOURS double face : entre les faces des meshes (jonctions en T de la geometrie d'origine), de fines
+        # Double face (sauf BLEND : les tissus a deux couches, tapisseries, se superposeraient a l'envers) : entre les faces des meshes (jonctions en T de la geometrie d'origine), de fines
         # fissures laissent voir le ciel en traits clairs ; en double face on voit l'envers des faces voisines.
         # Feuillages / transparents : visibles des deux cotes (sinon ils « clignotent » selon l'angle) ; seuil alpha plafonne (avec les mipmaps, les feuilles s'amincissent puis
         # disparaissent a distance).
-        m = {"name": name, "pbrMetallicRoughness": pbr, "doubleSided": True}
+        m = {"name": name, "pbrMetallicRoughness": pbr, "doubleSided": True if alpha != "BLEND" else bool(double_sided)}
         if alpha != "OPAQUE":
             m["alphaMode"] = alpha
             if alpha == "MASK":

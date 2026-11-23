@@ -184,8 +184,8 @@ If the *Red Mountain* mod (volcano smoke + distant mountain impostor) is found (
 `config.json`, or `~/Téléchargements/Red Mountain`; `--no-red-mountain` to skip), `world.tscn` gets a `RedMountain` node
 (`redmountain.gd`): a raymarched volumetric **smoke plume** (bent by the wind, lit by the sun, lava glow at the crater) and a
 silhouette **impostor** of the mountain (64 views picked from the camera's compass angle), so the volcano is visible from
-anywhere. Both sit at the real crater position of the map (lowered by `altitude_offset_m` = −12 m, which matches the crater floor in the terrain data) (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
-z=-691.8`, cell (2, 8)), independently of the exported area. The impostor is left out automatically when the real
+anywhere. Both sit at the real crater position of the map (lowered by `altitude_offset_m` (default −100 m: the volcano is supposed to be very far away, so it sits lower on the horizon; the crater floor is at about −12 m in the terrain data; adjustable at runtime) ) (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
+z=-691.8`, cell (2, 8)), independently of the exported area. The mountain impostor is fully opaque (no distance fade, no see-through). The impostor is left out automatically when the real
 mountain terrain is in the scene (detailed grid or farlands). The plume is rendered on a full-screen quad (a ray is rebuilt per pixel) and reads the impostor's silhouette mask: the smoke behind the mountain is hidden even where the mountain is semi-transparent. Both are drawn before any window (render priority −2 / −1). Only the mod's textures are copied; shaders and scripts are original.
 
 **Fog.** The world fog is sized to the exported extent (`DayNight.view_distance`, 90 % of the distance from the detailed grid to the nearest
@@ -205,7 +205,7 @@ interiors stored on a high grid, y = 6000 m) and `Levels/Morrowind/` (assets, ef
   player only (multiplayer-safe); missing structural colliders and double-sided foliage are also fixed at runtime;
   the outdoor world is hidden from the camera inside an interior (it used to show through the cracks between meshes);
 - **level options** (`level_options.gd`) in the pause menu: time of day (real time / fixed hour), fog, clouds,
-  sun glare, rain — host only, synchronised over LAN;
+  rain — host only, synchronised over LAN;
 - `level_environment.gd` (the level's Environment wins over the graphics menu), `interior_env.gd` (interiors use the
   level's environment without sky and fog).
 

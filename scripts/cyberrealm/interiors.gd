@@ -116,7 +116,7 @@ const ALPHA_CUTOFF := 0.28
 var _fixed_mats := {}
 var _colliders_done := {}   # clé d'intérieur -> true
 
-# Tous les matériaux en DOUBLE FACE. Entre les faces des meshes (jonctions en T de la géométrie d'origine),
+# Matériaux opaques et alpha scissor en DOUBLE FACE (les alpha BLEND restent simple face). Entre les faces des meshes (jonctions en T de la géométrie d'origine),
 # de fines fissures laissent voir ce qui est derrière — la skybox — sous forme de traits clairs. En double
 # face, le regard tombe sur l'envers des faces voisines (sombre) au lieu du ciel. Les matériaux transparents
 # (feuillages) y gagnent d'être visibles des deux côtés ; feuillages en alpha scissor : voir ALPHA_CUTOFF.
@@ -128,7 +128,9 @@ func _fix_materials(root_n: Node) -> void:
 		_fixed_mats[mesh] = true
 		for s in mesh.get_surface_count():
 			var m := mesh.surface_get_material(s) as BaseMaterial3D
-			if m == null:
+			# BLEND : tel qu'exporté (simple face) — les tapisseries sont des tissus à deux couches (face avant et
+			# arrière), le double face superposerait l'envers de la couche arrière à l'image.
+			if m == null or m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA:
 				continue
 			m.cull_mode = BaseMaterial3D.CULL_DISABLED
 			if m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR:

@@ -77,7 +77,7 @@ def fix_alpha_materials(models):
     exportee en BLEND/MASK sur certains meshes et en OPAQUE sur d'autres (propriete alpha absente ou non
     heritee) : sur ceux-la, les zones transparentes ressortent en aplats opaques (« tapis mal textures »).
     Si une texture a >2 % de pixels transparents et sert deja en BLEND/MASK ailleurs, ses materiaux OPAQUE
-    passent dans ce mode (BLEND s'il existe, sinon MASK), en double face."""
+    passent dans ce mode (BLEND s'il existe, sinon MASK ; double face seulement en MASK)."""
     import collections
     import numpy as np
     from PIL import Image
@@ -112,8 +112,8 @@ def fix_alpha_materials(models):
             mode = upgrade.get(os.path.normpath(os.path.join(f.parent, uri)))
             if mode:
                 m["alphaMode"] = mode
-                m["doubleSided"] = True
-                if mode == "MASK":
+                if mode == "MASK":              # BLEND reste simple face : tissus a deux couches (tapisseries)
+                    m["doubleSided"] = True
                     m["alphaCutoff"] = 0.28
                 changed = True
                 fixed += 1

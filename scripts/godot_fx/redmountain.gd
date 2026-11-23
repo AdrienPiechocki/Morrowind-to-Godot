@@ -7,7 +7,12 @@ const MW_TO_M := 0.01
 
 @export var crater_mw := Vector3(20848.0, 69177.0, 12345.0)         # cratere (x est, y nord, z haut)
 @export var photo_origin_mw := Vector3(20848.0, 68977.0, 11220.0)   # reference des vues de l'impostor
-@export var altitude_offset_m := -12.0   # abaisse tout le volcan (montagne + fumee) : le sol du cratere est a ~101-112 m dans les donnees, le pack le place a 123 m
+# Abaisse tout le volcan (montagne + fumee) : il est cense etre tres loin, donc plus bas sur l'horizon. Reglable a chaud
+# (menu pause > Level). Valeur de base du pack : le cratere est a ~123 m ; -12 m correspond au sol du cratere dans les donnees.
+@export var altitude_offset_m := -100.0:
+	set(v):
+		altitude_offset_m = v
+		_apply_altitude()
 @export var show_plume := true
 @export var show_impostor := true     # inutile si le vrai terrain du volcan est dans la scene (farlands)
 @export var plume_height_m := 860.0
@@ -35,6 +40,7 @@ var _mountain_mat: ShaderMaterial
 var _sun: DirectionalLight3D
 var _env: Environment
 var _imp_center := Vector3.ZERO
+var _imp_mi: MeshInstance3D
 var _imp_size := 896.87
 
 static func mw_to_godot(p: Vector3) -> Vector3:
@@ -86,6 +92,21 @@ func _build_plume() -> void:
 	mi.material_override = _plume_mat
 	add_child(mi)
 
+# Recale panache et impostor sur l'altitude courante (appele a chaque changement de altitude_offset_m).
+func _apply_altitude() -> void:
+	if _plume_mat != null:
+		var origin := mw_to_godot(crater_mw) + Vector3(0.0, altitude_offset_m, 0.0)
+		var reach := plume_radius_top_m * 1.3 + plume_bend_m + 30.0
+		_plume_mat.set_shader_parameter("box_min", Vector3(origin.x - reach, origin.y - base_sink_m - 2.0, origin.z - reach))
+		_plume_mat.set_shader_parameter("box_max", Vector3(origin.x + reach, origin.y + plume_height_m + 30.0, origin.z + reach))
+		_plume_mat.set_shader_parameter("origin", origin)
+	if _imp_mi != null and is_instance_valid(_imp_mi):
+		var ref := mw_to_godot(photo_origin_mw) + Vector3(0.0, altitude_offset_m * 2.0, 0.0)
+		_imp_mi.position = Vector3(ref.x, ref.y * 0.5, ref.z)
+		_imp_center = _imp_mi.position
+		if _plume_mat != null:
+			_plume_mat.set_shader_parameter("mt_center", _imp_center)
+
 func _build_impostor() -> void:
 	var atlases := [atlas0, atlas1, atlas2, atlas3]
 	_mountain_mat = ShaderMaterial.new()
@@ -106,6 +127,7 @@ func _build_impostor() -> void:
 	quad.size = Vector2(1, 1)
 	var mi := MeshInstance3D.new()
 	mi.name = "MountainImpostor"
+	_imp_mi = mi
 	mi.mesh = quad
 	mi.position = Vector3(ref.x, ref.y * 0.5, ref.z)
 	_imp_center = mi.position

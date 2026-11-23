@@ -69,6 +69,6 @@ void fragment() {
 	// meme brume exponentielle que le terrain (Environment.fog_density) : la montagne se fond comme lui
 	col = mix(col, fog_color, clamp(max(haze, low), 0.0, haze_max + (1.0 - haze_max) * low));
 	ALBEDO = col;
-	float fade = pow(1.0 - smoothstep(fade_start, fade_end, dist_cam), 1.5);     // plus loin = plus transparent
-	ALPHA = smoothstep(0.02, 0.45, m) * fade;      // opaque : cache la fumee derriere elle
+	// Opaque : ni fondu de distance ni translucidite (le ciel etoile ne doit pas transparaitre) ; bord adouci sur ~1 px.
+	ALPHA = smoothstep(0.01, 0.15, m);
 }
