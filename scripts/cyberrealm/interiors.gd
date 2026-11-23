@@ -130,7 +130,9 @@ func _fix_materials(root_n: Node) -> void:
 			var m := mesh.surface_get_material(s) as BaseMaterial3D
 			# BLEND : tel qu'exporté (simple face) — les tapisseries sont des tissus à deux couches (face avant et
 			# arrière), le double face superposerait l'envers de la couche arrière à l'image.
-			if m == null or m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA:
+			# (l'import glTF de Godot traduit alphaMode BLEND en ALPHA_DEPTH_PRE_PASS)
+			if m == null or m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA \
+					or m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS:
 				continue
 			m.cull_mode = BaseMaterial3D.CULL_DISABLED
 			if m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR:

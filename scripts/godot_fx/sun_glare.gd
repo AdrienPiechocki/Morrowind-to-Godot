@@ -4,25 +4,27 @@ extends Node
 ## Le glow du moteur (bloom) dépend de la luminosité du disque solaire dans le ciel : une fenêtre
 ## semi-transparente l'assombrit et le halo disparaît. Ici le halo est une couche additive plein écran,
 ## dessinée après les fenêtres : il ne dépend plus d'elles. Elle ne s'affiche que sur les pixels de ciel
-## (profondeur lointaine) : le relief, les bâtiments et les fenêtres opaques le masquent.
+## (tampon de profondeur vide, test de profondeur matériel) : le relief, les bâtiments et les fenêtres
+## opaques (qui écrivent leur profondeur) le masquent ; les fenêtres translucides le laissent passer.
 ## Pas d'affichage à l'intérieur (caméra avec environnement propre).
 
 @export_range(0.0, 3.0, 0.05) var glare_intensity := 1.0   # 0 = aucun halo ; réglé dans le menu pause > Level
 
 const SHADER_CODE := """
 shader_type spatial;
-render_mode unshaded, blend_add, cull_disabled, depth_test_disabled, depth_draw_never, shadows_disabled, fog_disabled;
+render_mode unshaded, blend_add, cull_disabled, depth_draw_never, shadows_disabled, fog_disabled;
 
 uniform vec3 sun_dir = vec3(0.0, 1.0, 0.0);   // direction VERS le soleil
 uniform float strength = 1.0;
-uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
 
 void vertex() {
-	POSITION = vec4(VERTEX.x, VERTEX.y, 1.0, 1.0);   // quad plein ecran (QuadMesh 2x2)
+	// Quad plein ecran (QuadMesh 2x2) tout au fond (profondeur ~0, Z inverse) AVEC test de profondeur : le halo
+	// n'apparait que sur les pixels dont le tampon de profondeur est encore vide (ciel), y compris derriere les
+	// fenetres OPAQUES (qui ecrivent leur profondeur), tandis que les fenetres translucides le laissent passer.
+	POSITION = vec4(VERTEX.x, VERTEX.y, 0.0000001, 1.0);
 }
 
 void fragment() {
-	if (texture(depth_tex, SCREEN_UV).x > 0.00001) discard;   // seulement le ciel
 	vec4 vp = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, 0.5, 1.0);
 	vec3 rd = normalize((INV_VIEW_MATRIX * vec4(vp.xyz / vp.w, 0.0)).xyz);
 	float c = dot(rd, sun_dir);
