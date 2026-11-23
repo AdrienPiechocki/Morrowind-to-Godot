@@ -64,7 +64,9 @@ else
     echo "[OK] io_scene_mw cloned into io_scene_mw/."
 fi
 
-ADDON_SRC="$IO_SCENEMW_DIR/io_scene_mw"
+# The upstream repo is the addon itself (older layouts nested it one level deeper).
+ADDON_SRC="$IO_SCENEMW_DIR"
+[ -d "$IO_SCENEMW_DIR/io_scene_mw" ] && ADDON_SRC="$IO_SCENEMW_DIR/io_scene_mw"
 
 if [ ! -d "$ADDON_SRC" ]; then
     echo "[-]  Addon directory not found: $ADDON_SRC"
