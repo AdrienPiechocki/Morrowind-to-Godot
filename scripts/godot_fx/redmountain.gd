@@ -7,6 +7,7 @@ const MW_TO_M := 0.01
 
 @export var crater_mw := Vector3(20848.0, 69177.0, 12345.0)         # cratere (x est, y nord, z haut)
 @export var photo_origin_mw := Vector3(20848.0, 68977.0, 11220.0)   # reference des vues de l'impostor
+@export var altitude_offset_m := -12.0   # abaisse tout le volcan (montagne + fumee) : le sol du cratere est a ~101-112 m dans les donnees, le pack le place a 123 m
 @export var show_plume := true
 @export var show_impostor := true     # inutile si le vrai terrain du volcan est dans la scene (farlands)
 @export var plume_height_m := 860.0
@@ -47,7 +48,7 @@ func _ready() -> void:
 		_build_impostor()
 
 func _build_plume() -> void:
-	var origin := mw_to_godot(crater_mw)
+	var origin := mw_to_godot(crater_mw) + Vector3(0.0, altitude_offset_m, 0.0)
 	var wind := Vector2(wind_mw.x, -wind_mw.y).normalized()          # nord MW = -z Godot
 	var reach := plume_radius_top_m + plume_bend_m
 	var bmin := Vector3(origin.x - reach, origin.y - base_sink_m - 2.0, origin.z - reach)
@@ -90,7 +91,7 @@ func _build_impostor() -> void:
 			return
 		_mountain_mat.set_shader_parameter("atlas%d" % i, t)
 	# plan vertical centre sur l'origine des photos, abaisse de la hauteur d'appareil (z/2)
-	var ref := mw_to_godot(photo_origin_mw)
+	var ref := mw_to_godot(photo_origin_mw) + Vector3(0.0, altitude_offset_m * 2.0, 0.0)   # le plan est centre a ref.y / 2
 	var photo_dist := 81920.0 * MW_TO_M                      # 10 cells
 	var half_tan := 0.57735027 * (512.0 / 540.0)
 	var size := photo_dist * half_tan * 2.0

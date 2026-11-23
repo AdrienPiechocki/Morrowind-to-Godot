@@ -184,7 +184,7 @@ If the *Red Mountain* mod (volcano smoke + distant mountain impostor) is found (
 `config.json`, or `~/Téléchargements/Red Mountain`; `--no-red-mountain` to skip), `world.tscn` gets a `RedMountain` node
 (`redmountain.gd`): a raymarched volumetric **smoke plume** (bent by the wind, lit by the sun, lava glow at the crater) and a
 silhouette **impostor** of the mountain (64 views picked from the camera's compass angle), so the volcano is visible from
-anywhere. Both sit at the real crater position of the map (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
+anywhere. Both sit at the real crater position of the map (lowered by `altitude_offset_m` = −12 m, which matches the crater floor in the terrain data) (Morrowind `x=20848, y=69177, z=12345` → Godot `x=208.5, y=123.5,
 z=-691.8`, cell (2, 8)), independently of the exported area. The impostor is left out automatically when the real
 mountain terrain is in the scene (detailed grid or farlands). The impostor is drawn opaque **over** the plume (render priority), so the smoke comes out from behind the summit. Only the mod's textures are copied; shaders and scripts are original.
 
