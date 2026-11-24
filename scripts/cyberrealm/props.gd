@@ -12,6 +12,7 @@ const PropBodyScript := preload("res://user/Levels/Morrowind/scripts/prop_body.g
 const PROP_LAYER := 1 << 20                # couche physique des objets de décor (voir player.gd)
 
 const GLOW_WORDS := ["lantern", "lightpost", "lamp", "torch", "sconce", "chandelier"]
+const NO_GLOW_NAMES := ["light_de_lamp_01"]                         # sans lumière ni émission
 const NO_HALO_WORDS := ["lightpost", "torch"]            # lumière seule, pas de halo sur le mesh
 const SWAY_WORDS := ["lantern"]                                     # suspendues
 # Tout objet SANS collider devient physique, sauf la flore, la structure et le décor souple/lumineux.
@@ -86,6 +87,8 @@ func _process_mesh(mi: MeshInstance3D) -> void:
 		return
 	_mi_seen[mi] = true
 	var low := String(mi.name).to_lower()
+	if _has_word(low, NO_GLOW_NAMES):
+		return
 	if _has_word(low, GLOW_WORDS) and not low.contains("-colonly"):
 		_add_glow(mi, low)
 		if _has_word(low, SWAY_WORDS):
