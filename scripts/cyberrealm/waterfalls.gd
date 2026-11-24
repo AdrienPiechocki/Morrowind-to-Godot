@@ -7,7 +7,7 @@ extends Node
 ## Le décalage dépend de l'horloge (pas d'un état accumulé) : toutes les machines voient la même eau, et rien
 ## n'est à sérialiser dans le blob LAN.
 
-const SPEED := 0.7        # tours de texture par seconde (V croît vers le bas du mesh : décalage négatif = vers le bas)
+const SPEED := 1.4        # tours de texture par seconde (V croît vers le bas du mesh : décalage négatif = vers le bas)
 
 var _mats: Array[BaseMaterial3D] = []
 
