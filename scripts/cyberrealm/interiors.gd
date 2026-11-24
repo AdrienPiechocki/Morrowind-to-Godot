@@ -36,10 +36,6 @@ const INDOOR_MIN_Y := 3000.0              # au-dessus = dans un intérieur
 const FALL_LIMIT := 60.0                  # chute sous le plancher haut -> retour dehors
 const DEPTH_GRACE := 5               # marge sous un point d'arrivée immergé (m)
 const FEET_TO_ORIGIN := 0.55              # origine du joueur au-dessus du sol (capsule)
-const EXT_DOOR_RADIUS := 1.4
-const EXT_DOOR_HEIGHT := 3.0
-const EXIT_DOOR_RADIUS := 1.0
-const EXIT_DOOR_HEIGHT := 2.8
 const EXIT_BEHIND := 1.2                  # la porte de sortie est derrière le point d'arrivée
 
 var _interiors := {}      # clé (nom de fichier) -> Node3D racine de l'intérieur
@@ -245,7 +241,7 @@ const EXIT_SEARCH_RADIUS := 3.0           # rayon de recherche du mesh de la por
 const ENTER_SEARCH_RADIUS := 0.5          # le mesh d'une porte est à l'origine de son marqueur
 const DOOR_WORDS := ["door"]              # noms prioritaires pour les sorties
 const EXIT_WORDS := ["grate", "hatch", "gate", "exit", "trap", "entrance"]
-const NOT_DOORS := ["jamb", "frame", "doorway", "arch"]   # décor autour de la porte, pas la porte
+const NOT_DOORS := ["jamb", "frame", "doorway", "arch", "indoor", "outdoor"]   # décor autour de la porte, pas la porte
 
 var _cands := {}          # clé de portée -> Array de {mesh, body, claimed}
 
@@ -289,11 +285,9 @@ func _build_doors(level: Node) -> void:
 			if m.has_meta("door_position"):
 				door_pos = (s[1] as Node3D).to_global(m.get_meta("door_position") as Vector3)
 			var body := _claim_at(scope_key, door_pos, door_id, tkey)
+			# Pas de mesh de porte : pas d'entrée (aucune zone de repli, on ne passe que par les portes).
 			if body != null:
 				_bind(body, prompt, data)
-			else:
-				_attach(m as Node3D, "Enter_%d" % n, (m as Node3D).to_local(door_pos) + Vector3(0, EXT_DOOR_HEIGHT * 0.5 - 0.3, 0),
-					EXT_DOOR_RADIUS, EXT_DOOR_HEIGHT, prompt, data)
 			exits.append([n, m, tkey, ap, yaw, scope_key, scope_name])
 			n += 1
 	for e in exits:
@@ -315,10 +309,22 @@ func _build_doors(level: Node) -> void:
 				# Même porte physique que la sortie d'une autre source : une seule
 				# zone cliquable ; au clic on revient par la source réellement utilisée.
 				((dup as StaticBody3D).data["alts"] as Array).append({"target": e[5], "marker": m})
-			elif dup == null:
-				_attach(_interiors[tkey] as Node3D, "Exit_%d" % e[0],
-					behind + Vector3(0, EXIT_DOOR_HEIGHT * 0.5 - 0.3, 0),
-					EXIT_DOOR_RADIUS, EXIT_DOOR_HEIGHT, prompt, data)
+			# Sinon : la porte réciproque existe déjà (« true »), ou il n'y a pas de mesh de porte : rien
+			# n'est créé (jamais de zone de repli).
+	# Portes sans destination : elles s'ouvrent et se ferment au clic, comme dans le jeu.
+	for scope in scopes:
+		for c in _candidates(scope[0]):
+			if not c["claimed"] and _is_swing_door(c["mesh"] as MeshInstance3D):
+				var sbody := _body_of(c)
+				if sbody != null:
+					c["claimed"] = true
+					c["kind"] = "swing"
+					_bind(sbody, "", {"kind": "swing", "mesh": c["mesh"]})
+
+# Vrai battant (pivot sur la charnière) : « door » sans être une trappe, grille, etc.
+func _is_swing_door(mi: MeshInstance3D) -> bool:
+	var nm := String(mi.name).to_lower()
+	return _has_word(nm, DOOR_WORDS) and not _has_word(nm, EXIT_WORDS)
 
 # ── Meshes de portes ─────────────────────────────────────────────────
 
@@ -412,11 +418,12 @@ func _take(c: Dictionary, kind := "enter", dest := "") -> StaticBody3D:
 # physique atteinte depuis une autre source (un mesh = une seule destination).
 func _exit_duplicate(scope: String, pos: Vector3, dest: String) -> Variant:
 	for c in _candidates(scope):
-		if not c["claimed"] or (c["mesh"] as Node3D).global_position.distance_to(pos) >= DUPLICATE_RADIUS:
+		if not c["claimed"]:
 			continue
-		if c["kind"] == "exit":
+		var d := (c["mesh"] as Node3D).global_position.distance_to(pos)
+		if c["kind"] == "exit" and d < DUPLICATE_RADIUS:
 			return c["body"]
-		if c["kind"] == "enter" and c["dest"] == dest:
+		if c["kind"] == "enter" and c["dest"] == dest and d < EXIT_SEARCH_RADIUS:
 			return true     # la porte réciproque existe déjà : rien à ajouter
 	return null
 
@@ -438,26 +445,6 @@ func _target_key(marker: Node) -> String:
 # Les noms de nœuds n'admettent pas « . » (remplacé par « _ » à l'instanciation).
 static func _key(s: String) -> String:
 	return s.replace(".", "_")
-
-func _attach(parent: Node3D, node_name: String, local_pos: Vector3, radius: float,
-		height: float, prompt: String, data: Dictionary) -> void:
-	var body := StaticBody3D.new()
-	body.set_script(DoorScript)
-	body.name = node_name
-	body.collision_layer = DOOR_PHYS_LAYER
-	body.collision_mask = 0
-	body.position = local_pos
-	var shape := CylinderShape3D.new()
-	shape.radius = radius
-	shape.height = height
-	var cs := CollisionShape3D.new()
-	cs.shape = shape
-	body.add_child(cs)
-	body.manager = self
-	body.prompt = prompt
-	body.data = data
-	parent.set_meta("lan_skip_children", true)   # jamais baké : recréé par chaque machine
-	parent.add_child(body)
 
 # ── Utilisation d'une porte ──────────────────────────────────────────
 

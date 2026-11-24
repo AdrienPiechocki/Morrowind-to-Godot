@@ -1,16 +1,82 @@
 extends StaticBody3D
-## Porte cliquable : attaché par interiors.gd au collider du mesh de la porte
-## (ou à une zone de repli créée à l'exécution). Le clic gauche appelle interact() sur TOUTES les machines de la
-## session (world_interactor) ; interiors.gd ne téléporte que le joueur dont
-## l'id correspond à celui qui a cliqué.
+## Porte cliquable : attaché par interiors.gd au collider du mesh de la porte.
+## Le clic gauche appelle interact() sur TOUTES les machines de la session
+## (world_interactor) ; interiors.gd ne téléporte que le joueur dont l'id
+## correspond à celui qui a cliqué.
+##
+## Porte sans destination (data.kind == "swing") : elle s'ouvre / se ferme sur sa
+## charnière (l'origine du mesh) à chaque clic, sur chaque machine. Le sens
+## d'ouverture est déterministe (côté dégagé) pour que tout le monde voie la même.
+
+const OPEN_ANGLE := PI * 0.5
+const OPEN_TIME := 0.45
+const PROBE_RADIUS := 0.25
 
 var manager: Node = null
 var prompt := ""
 var data := {}      # cible/sens de la porte (runtime, jamais sérialisé)
 
+var _open := false
+var _sign := 0.0
+var _closed_mesh := Transform3D.IDENTITY
+var _closed_body := Transform3D.IDENTITY
+var _tween: Tween = null
+var _angle := 0.0
+
 func interact(player_id: int) -> void:
-	if manager != null and is_instance_valid(manager):
+	if data.get("kind", "") == "swing":
+		_toggle()
+	elif manager != null and is_instance_valid(manager):
 		manager.use_door(self, player_id)
 
 func get_interact_prompt() -> String:
+	if data.get("kind", "") == "swing":
+		return "Close door" if _open else "Open door"
 	return prompt
+
+func _toggle() -> void:
+	var mesh := data.get("mesh") as Node3D
+	if mesh == null or not is_instance_valid(mesh):
+		return
+	if _sign == 0.0:
+		_closed_mesh = mesh.transform
+		_closed_body = transform
+		_sign = _free_side(mesh)
+	_open = not _open
+	var target := _sign * OPEN_ANGLE if _open else 0.0
+	if _tween != null and _tween.is_valid():
+		_tween.kill()
+	var from := _angle
+	_tween = create_tween()
+	_tween.tween_method(_set_angle.bind(mesh), from, target, OPEN_TIME * absf(target - from) / OPEN_ANGLE) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+# Pivote le mesh ET son collider (frères, même repère) autour de l'axe Y local de la charnière.
+func _set_angle(a: float, mesh: Node3D) -> void:
+	if not is_instance_valid(mesh):
+		return
+	_angle = a
+	var rot := Basis(Vector3.UP, a)
+	mesh.transform = Transform3D(_closed_mesh.basis * rot, _closed_mesh.origin)
+	transform = Transform3D(_closed_body.basis * rot, _closed_body.origin)
+
+# Côté vers lequel le battant s'ouvre : celui où l'extrémité libre ne rencontre
+# aucun mur. Calcul sur la géométrie statique : identique sur toutes les machines.
+func _free_side(mesh: Node3D) -> float:
+	var mi := mesh as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		return 1.0
+	var c := mi.mesh.get_aabb().get_center()
+	var space := get_world_3d().direct_space_state
+	var shape := SphereShape3D.new()
+	shape.radius = PROBE_RADIUS
+	for s in [1.0, -1.0]:
+		var local_end := Basis(Vector3.UP, s * OPEN_ANGLE) * c
+		var q := PhysicsShapeQueryParameters3D.new()
+		q.shape = shape
+		q.collision_mask = 1
+		q.exclude = [get_rid()]
+		q.transform = Transform3D(Basis.IDENTITY, mesh.global_transform * local_end)
+		if space.intersect_shape(q, 1).is_empty():
+			return s
+	return 1.0
