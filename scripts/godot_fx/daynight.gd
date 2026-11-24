@@ -9,7 +9,7 @@ extends Node
 @export var time_of_day := 10.0               # heures (0-24)
 @export var day_length := 0.0                 # secondes reelles pour 24 h ; 0 = temps fige
 @export var sun_energy := 1.5
-@export var moon_energy := 0.14
+@export var moon_energy := 0.45
 @export var secunda_orbit := 0.0873           # rad (5 deg) : distance angulaire Secunda <-> Masser
 @export_range(0.0, 5.0, 0.05) var fog_thickness := 1.0   # x densite de la brume (0 = aucune)
 @export var view_distance := 0.0              # m : distance ou tout disparait dans la brume (0 = brume legere par defaut)
@@ -100,7 +100,7 @@ func _update() -> void:
 		_env.fog_light_color = horizon
 		var clear_density := 0.00035 if view_distance <= 0.0 else 3.9 / view_distance   # exp(-d*D) ~ 2 % a view_distance
 		_env.fog_density = lerpf(clear_density, clear_density * 2.2, overcast) * _fog_mul()
-		_env.ambient_light_energy = lerpf(0.35, 1.0, day)
+		_env.ambient_light_energy = lerpf(0.8, 1.0, day)
 		if _env.volumetric_fog_enabled:
 			_env.volumetric_fog_albedo = Color(1.0, 0.85, 0.65).lerp(Color(0.8, 0.85, 1.0), night)
 			_env.volumetric_fog_density = lerpf(0.0006, 0.004, overcast) * _fog_mul()

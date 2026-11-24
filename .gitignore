@@ -14,3 +14,4 @@ scripts/__pycache__/
 *.bin
 *.gltf
 /textures_gltf
+vendor/
