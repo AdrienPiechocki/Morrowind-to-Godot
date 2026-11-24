@@ -11,9 +11,9 @@ const PropBodyScript := preload("res://user/Levels/Morrowind/scripts/prop_body.g
 
 const PROP_LAYER := 1 << 20                # couche physique des objets de décor (voir player.gd)
 
-const GLOW_WORDS := ["lantern", "lightpost", "lamp", "torch", "sconce", "chandelier"]
+# Seules les sources AVEC émission reçoivent une lumière (lightpost, torch… ont un support : lumière mal placée).
+const GLOW_WORDS := ["lantern", "lamp", "sconce", "chandelier"]
 const NO_GLOW_NAMES := ["light_de_lamp_01"]                         # sans lumière ni émission
-const NO_HALO_WORDS := ["lightpost", "torch"]            # lumière seule, pas de halo sur le mesh
 const SWAY_WORDS := ["lantern"]                                     # suspendues
 # Tout objet SANS collider devient physique, sauf la flore, la structure et le décor souple/lumineux.
 const NOT_PHYS_WORDS := ["-colonly", "plant", "flora", "grass", "tree_", "_tree", "bush", "shrub", "leaf", "leaves",
@@ -35,7 +35,6 @@ const BODY_NEAR := 5.0                   # m : un corps (figé) est créé quand
 const BODY_FAR := 8.0                    # m : et détruit au-delà, tant qu'il n'a pas été touché
 const SWAY_RADIUS := 40.0                 # m : balancement actif autour de la caméra
 const LIGHT_RANGE := 7.0
-const LIGHT_BELOW := 0.05                 # m : la lumière est placée sous le bas de la lanterne
 const LIGHT_ENERGY := 0.7
 const LIGHT_COLOR := Color(1.0, 0.68, 0.38)
 const FADE_BEGIN := 22.0                  # m : la lumière s'éteint progressivement (perf iGPU)
@@ -113,13 +112,11 @@ func _add_glow(mi: MeshInstance3D, low: String) -> void:
 	light.distance_fade_begin = FADE_BEGIN
 	light.distance_fade_length = FADE_LENGTH
 	light.light_cull_mask = mi.layers | 1       # couche du mesh (extérieur / intérieur) + avatars
-	# Sous la lanterne (quelques cm sous le bas du mesh), pas dans le mesh : le dessous est éclairé, le verre ne l'est pas.
-	var aabb := mi.get_aabb()
-	var sy := maxf(absf(mi.global_transform.basis.get_scale().y), 0.01)
-	light.position = Vector3(aabb.get_center().x, aabb.position.y - LIGHT_BELOW / sy, aabb.get_center().z)
+	light.position = mi.get_aabb().get_center()
 	mi.set_meta("lan_skip_children", true)
 	mi.add_child(light)
 	var outdoor := mi.global_position.y < INDOOR_MIN_Y
+	_make_glow(mi, outdoor)
 	_lights.append({"light": light, "base": LIGHT_ENERGY, "outdoor": outdoor})
 
 # La lanterne elle-même s'illumine : copie des matériaux du mesh avec émission = sa propre texture (les
@@ -136,7 +133,7 @@ func _make_glow(mi: MeshInstance3D, outdoor: bool) -> void:
 			var m := src.duplicate() as StandardMaterial3D
 			m.emission_enabled = true
 			m.emission = Color(1.0, 0.62, 0.3)
-			m.emission_energy_multiplier = 0.12
+			m.emission_energy_multiplier = 0.05
 			if m.albedo_texture != null:
 				m.emission_texture = m.albedo_texture
 				m.emission = Color(1.0, 0.8, 0.55)
@@ -152,7 +149,7 @@ func _update_lights() -> void:
 		dark = 1.0 - smoothstep(0.1, 0.9, _sun.light_energy)
 	for g in _glow_list:
 		if g.outdoor:
-			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.01, 0.12, dark)
+			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.005, 0.05, dark)
 	for d in _lights:
 		var l := d.light as OmniLight3D
 		if not is_instance_valid(l):
