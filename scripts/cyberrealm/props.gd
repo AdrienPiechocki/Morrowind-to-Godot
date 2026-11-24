@@ -35,6 +35,7 @@ const BODY_NEAR := 5.0                   # m : un corps (figé) est créé quand
 const BODY_FAR := 8.0                    # m : et détruit au-delà, tant qu'il n'a pas été touché
 const SWAY_RADIUS := 40.0                 # m : balancement actif autour de la caméra
 const LIGHT_RANGE := 7.0
+const LIGHT_BELOW := 0.05                 # m : la lumière est placée sous le bas de la lanterne
 const LIGHT_ENERGY := 0.7
 const LIGHT_COLOR := Color(1.0, 0.68, 0.38)
 const FADE_BEGIN := 22.0                  # m : la lumière s'éteint progressivement (perf iGPU)
@@ -112,12 +113,13 @@ func _add_glow(mi: MeshInstance3D, low: String) -> void:
 	light.distance_fade_begin = FADE_BEGIN
 	light.distance_fade_length = FADE_LENGTH
 	light.light_cull_mask = mi.layers | 1       # couche du mesh (extérieur / intérieur) + avatars
-	light.position = mi.get_aabb().get_center()
+	# Sous la lanterne (quelques cm sous le bas du mesh), pas dans le mesh : le dessous est éclairé, le verre ne l'est pas.
+	var aabb := mi.get_aabb()
+	var sy := maxf(absf(mi.global_transform.basis.get_scale().y), 0.01)
+	light.position = Vector3(aabb.get_center().x, aabb.position.y - LIGHT_BELOW / sy, aabb.get_center().z)
 	mi.set_meta("lan_skip_children", true)
 	mi.add_child(light)
 	var outdoor := mi.global_position.y < INDOOR_MIN_Y
-	if not _has_word(low, NO_HALO_WORDS):
-		_make_glow(mi, outdoor)
 	_lights.append({"light": light, "base": LIGHT_ENERGY, "outdoor": outdoor})
 
 # La lanterne elle-même s'illumine : copie des matériaux du mesh avec émission = sa propre texture (les

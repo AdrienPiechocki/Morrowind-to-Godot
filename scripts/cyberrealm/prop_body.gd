@@ -9,7 +9,7 @@ const HOLD_GAIN := 16.0           # raideur du suivi (vitesse = écart * gain)
 const HOLD_MAX_SPEED := 12.0
 const LOSE_DIST := 2.2            # m : l'objet est resté coincé loin de la main -> on le lâche
 const THROW_SPEED := 11.0
-const BREAK_SPEED := 5.5          # m/s de vitesse d'impact (composante normale) pour casser un objet
+const BREAK_SPEED := 8.5          # m/s de vitesse d'impact (composante normale) pour casser un objet
 const SHARDS := 7
 
 var mesh_node: MeshInstance3D     # mesh d'origine, qui suit le corps (RemoteTransform3D)
