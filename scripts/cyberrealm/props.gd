@@ -15,16 +15,21 @@ const GLOW_WORDS := ["lantern", "lightpost", "lamp", "torch", "sconce", "chandel
 const NO_HALO_WORDS := ["lightpost", "torch"]            # lumière seule, pas de halo sur le mesh
 const SWAY_WORDS := ["lantern"]                                     # suspendues
 # Tout objet SANS collider devient physique, sauf la flore, la structure et le décor souple/lumineux.
-const NOT_PHYS_WORDS := ["-colonly", "plant", "flora", "grass", "tree", "bush", "shrub", "leaf", "leaves", "fern",
-	"flower", "kelp", "weed", "reed", "moss", "mushroom", "fungus", "vine", "root", "stalk", "bloom", "petal",
+const NOT_PHYS_WORDS := ["-colonly", "plant", "flora", "grass", "tree_", "_tree", "bush", "shrub", "leaf", "leaves",
+	"fern", "flower", "kelp", "weed", "reed", "moss", "mushroom", "fungus", "vine", "root", "stalk", "bloom", "petal",
 	"lichen", "cactus", "coral", "bramble", "heather", "wickwheat", "terrain", "land_",
-	"wall", "floor", "flr", "door", "stair", "ceil", "beam", "arch", "pillar", "column", "bridge", "rock", "boulder",
-	"rug", "rope", "banner", "curtain", "tapestry", "cloth", "web", "water", "fire", "smoke", "steam", "light",
-	"lantern", "candle", "lamp", "torch", "sign", "post"]
+	"wall", "floor", "flr", "door", "stair", "ceil", "beam", "arch_", "archway", "pillar", "column", "bridge",
+	"rock", "boulder", "rug", "rope", "banner", "curtain", "tapestry", "web", "waterfall", "watersurface", "fire_",
+	"fireplace", "smoke", "steam", "lantern", "lamp", "torch", "signpost", "signbase", "active_sign", "post",
+	"rack", "hook", "coals", "practice_mat"]
+const ITEM_PREFIXES := ["ingred_", "bk_", "p_", "sc_", "misc_"]    # objets ramassables : priment sur les mots exclus
 const NOT_PHYS_PREFIXES := ["in_", "ex_"]                          # modules d'architecture Morrowind
-const STATIC_BOX_WORDS := ["crate_02"]                             # caisses carrées : statiques, avec collision
-const PHYS_MIN_SIZE := 0.04               # m : plus petit = poussière
-const PHYS_MAX_SIZE := 0.6                # m : plus grand = meuble
+# Caisses, urnes : statiques, avec collision en boîte (noms exacts relevés dans l'export Morrowind).
+const STATIC_BOX_WORDS := ["crate", "furn_u", "_cr1", "_cr2", "_cr3", "_cr4", "_cr5", "urn_"]
+const PHYS_MIN_SIZE := 0.015               # m : plus petit = poussière
+const PHYS_MAX_SIZE := 1.6                # m : plus grand = meuble
+const STATIC_NEAR := 25.0                # m : collisions statiques (caisses, urnes) créées autour de la caméra
+const STATIC_FAR := 35.0
 const BODY_NEAR := 5.0                   # m : un corps (figé) est créé quand le joueur est plus près
 const BODY_FAR := 8.0                    # m : et détruit au-delà, tant qu'il n'a pas été touché
 const SWAY_RADIUS := 40.0                 # m : balancement actif autour de la caméra
@@ -37,6 +42,7 @@ const INDOOR_MIN_Y := 3000.0
 
 var _lights: Array = []        # {light, base, outdoor}
 var _sway: Array = []          # {mi, base, pivot, gpos, amp, freq, phase}
+var _statics: Array = []       # {mi, gpos, body}
 var _bodies: Array = []        # {mi, gpos, home, body (null si non instancié), woken}
 var _glow_mats := {}           # (matériau source, extérieur) -> copie émissive partagée
 var _glow_list: Array = []     # {mat, outdoor}
@@ -84,9 +90,10 @@ func _process_mesh(mi: MeshInstance3D) -> void:
 		_add_glow(mi, low)
 		if _has_word(low, SWAY_WORDS):
 			_add_sway(mi, low)
-	elif _has_word(low, STATIC_BOX_WORDS) and not low.contains("-colonly"):
+	elif (_has_word(low, STATIC_BOX_WORDS) or low.begins_with("urn")) and not low.contains("-colonly"):
 		_add_static_box(mi)
-	elif not _has_word(low, NOT_PHYS_WORDS) and not _starts_with_any(low, NOT_PHYS_PREFIXES):
+	elif (_starts_with_any(low, ITEM_PREFIXES) or not _has_word(low, NOT_PHYS_WORDS)) \
+			and not _starts_with_any(low, NOT_PHYS_PREFIXES):
 		_add_rigid(mi)
 
 # ── Lumière ──────────────────────────────────────────────────────────
@@ -124,7 +131,7 @@ func _make_glow(mi: MeshInstance3D, outdoor: bool) -> void:
 			var m := src.duplicate() as StandardMaterial3D
 			m.emission_enabled = true
 			m.emission = Color(1.0, 0.62, 0.3)
-			m.emission_energy_multiplier = 0.5
+			m.emission_energy_multiplier = 0.12
 			if m.albedo_texture != null:
 				m.emission_texture = m.albedo_texture
 				m.emission = Color(1.0, 0.8, 0.55)
@@ -140,7 +147,7 @@ func _update_lights() -> void:
 		dark = 1.0 - smoothstep(0.1, 0.9, _sun.light_energy)
 	for g in _glow_list:
 		if g.outdoor:
-			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.05, 0.5, dark)
+			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.01, 0.12, dark)
 	for d in _lights:
 		var l := d.light as OmniLight3D
 		if not is_instance_valid(l):
@@ -189,14 +196,20 @@ func _add_rigid(mi: MeshInstance3D) -> void:
 	var sc := mi.global_transform.basis.get_scale().abs()
 	var size := mi.get_aabb().size * sc
 	var ext := maxf(size.x, maxf(size.y, size.z))
-	if ext < PHYS_MIN_SIZE or ext > PHYS_MAX_SIZE or _has_collider(mi):
+	if ext < PHYS_MIN_SIZE or ext > PHYS_MAX_SIZE or _has_collider(mi) \
+			or (ext > 0.6 and String(mi.name).to_lower().contains("furn_")):     # meubles : pas des objets
 		return
 	_bodies.append({"mi": mi, "gpos": mi.global_position, "home": mi.global_transform, "body": null, "woken": false})
 
-# Collision statique en boîte englobante (caisses carrées sans collider d'origine).
+# Collision statique en boîte englobante (caisses, urnes sans collider d'origine). Créée à la demande autour de la
+# caméra (limite de corps de Jolt : il y en a des milliers dans le niveau).
 func _add_static_box(mi: MeshInstance3D) -> void:
 	if _has_collider(mi):
 		return
+	_statics.append({"mi": mi, "gpos": mi.global_position, "body": null})
+
+func _make_static(d: Dictionary) -> void:
+	var mi := d.mi as MeshInstance3D
 	var sc := mi.global_transform.basis.get_scale().abs()
 	var aabb := mi.get_aabb()
 	var box := BoxShape3D.new()
@@ -211,6 +224,23 @@ func _add_static_box(mi: MeshInstance3D) -> void:
 	par.set_meta("lan_skip_children", true)
 	par.add_child(sb)
 	sb.global_transform = Transform3D(mi.global_transform.basis.orthonormalized(), mi.global_position)
+	d.body = sb
+
+func _update_statics(cp: Vector3) -> void:
+	var near2 := STATIC_NEAR * STATIC_NEAR
+	var far2 := STATIC_FAR * STATIC_FAR
+	for d in _statics:
+		var sb = d.body
+		if sb != null and not is_instance_valid(sb):
+			d.body = null
+			sb = null
+		var d2 := (d.gpos as Vector3).distance_squared_to(cp)
+		if sb == null:
+			if d2 < near2 and is_instance_valid(d.mi) and (d.mi as MeshInstance3D).is_visible_in_tree():
+				_make_static(d)
+		elif d2 > far2:
+			sb.queue_free()
+			d.body = null
 
 func _make_body(d: Dictionary) -> void:
 	var mi := d.mi as MeshInstance3D
@@ -250,6 +280,7 @@ func _update_bodies() -> void:
 	if cam == null:
 		return
 	var cp := cam.global_position
+	_update_statics(cp)
 	var near2 := BODY_NEAR * BODY_NEAR
 	var far2 := BODY_FAR * BODY_FAR
 	for d in _bodies:
