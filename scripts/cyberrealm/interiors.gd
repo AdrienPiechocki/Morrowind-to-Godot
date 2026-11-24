@@ -301,6 +301,10 @@ func _build_doors(level: Node) -> void:
 		var prompt := "Exit: %s" % String(e[6])
 		var data := {"kind": "exit", "target": e[5], "marker": m, "alts": []}
 		var spot := (_interiors[tkey] as Node3D).to_global(behind)
+		# La porte réciproque (entrée de l'intérieur vers cette source) fait déjà office de sortie : sans ce
+		# test, un mesh voisin (cadre d'entrée, etc.) serait pris pour une seconde sortie.
+		if _has_reciprocal(tkey, spot, String(e[5])):
+			continue
 		var body := _claim_exit(tkey, spot)
 		if body != null:
 			_bind(body, prompt, data)
@@ -313,8 +317,10 @@ func _build_doors(level: Node) -> void:
 			# Sinon : la porte réciproque existe déjà (« true »), ou il n'y a pas de mesh de porte : rien
 			# n'est créé (jamais de zone de repli).
 	# Portes sans destination : elles s'ouvrent et se ferment au clic, comme dans le jeu.
-	for scope in scopes:
-		for c in _candidates(scope[0]):
+	var swing_scopes: Array = [""]       # TOUS les intérieurs, même ceux sans nœud « Doors »
+	swing_scopes.append_array(keys)
+	for scope in swing_scopes:
+		for c in _candidates(scope):
 			if not c["claimed"] and _is_swing_door(c["mesh"] as MeshInstance3D):
 				var sbody := _body_of(c)
 				if sbody != null:
@@ -416,6 +422,13 @@ func _take(c: Dictionary, kind := "enter", dest := "") -> StaticBody3D:
 		c["kind"] = kind
 		c["dest"] = dest
 	return body
+
+func _has_reciprocal(scope: String, pos: Vector3, dest: String) -> bool:
+	for c in _candidates(scope):
+		if c["claimed"] and c["kind"] == "enter" and c["dest"] == dest \
+				and (c["mesh"] as Node3D).global_position.distance_to(pos) < EXIT_SEARCH_RADIUS:
+			return true
+	return false
 
 # Une porte déjà prise PAR UNE AUTRE SORTIE tout près du point : même porte
 # physique atteinte depuis une autre source (un mesh = une seule destination).
