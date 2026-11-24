@@ -11,8 +11,8 @@ const PropBodyScript := preload("res://user/Levels/Morrowind/scripts/prop_body.g
 
 const PROP_LAYER := 1 << 20                # couche physique des objets de décor (voir player.gd)
 
-const GLOW_WORDS := ["lantern", "lightpost", "lamp", "candle", "torch", "sconce", "chandelier"]
-const NO_HALO_WORDS := ["lightpost", "candle", "torch"]            # lumière seule, pas de halo sur le mesh
+const GLOW_WORDS := ["lantern", "lightpost", "lamp", "torch", "sconce", "chandelier"]
+const NO_HALO_WORDS := ["lightpost", "torch"]            # lumière seule, pas de halo sur le mesh
 const SWAY_WORDS := ["lantern"]                                     # suspendues
 const PHYS_WORDS := ["bottle", "cup", "bowl", "plate", "potion", "mug", "goblet", "tankard", "pitcher", "jug",
 	"flask", "vial", "bk_", "book", "scroll", "sc_paper", "ingred", "apparatus", "stoneware", "redware", "pot_",
@@ -24,7 +24,7 @@ const BODY_NEAR := 5.0                   # m : un corps (figé) est créé quand
 const BODY_FAR := 8.0                    # m : et détruit au-delà, tant qu'il n'a pas été touché
 const SWAY_RADIUS := 40.0                 # m : balancement actif autour de la caméra
 const LIGHT_RANGE := 7.0
-const LIGHT_ENERGY := 1.3
+const LIGHT_ENERGY := 0.7
 const LIGHT_COLOR := Color(1.0, 0.68, 0.38)
 const FADE_BEGIN := 22.0                  # m : la lumière s'éteint progressivement (perf iGPU)
 const FADE_LENGTH := 10.0
@@ -111,7 +111,7 @@ func _make_glow(mi: MeshInstance3D, outdoor: bool) -> void:
 			var m := src.duplicate() as StandardMaterial3D
 			m.emission_enabled = true
 			m.emission = Color(1.0, 0.62, 0.3)
-			m.emission_energy_multiplier = 1.6
+			m.emission_energy_multiplier = 0.5
 			if m.albedo_texture != null:
 				m.emission_texture = m.albedo_texture
 				m.emission = Color(1.0, 0.8, 0.55)
@@ -127,7 +127,7 @@ func _update_lights() -> void:
 		dark = 1.0 - smoothstep(0.1, 0.9, _sun.light_energy)
 	for g in _glow_list:
 		if g.outdoor:
-			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.15, 1.6, dark)
+			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.05, 0.5, dark)
 	for d in _lights:
 		var l := d.light as OmniLight3D
 		if not is_instance_valid(l):
