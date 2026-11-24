@@ -37,6 +37,16 @@ func interact(player_id: int) -> void:
 	else:
 		_grab()
 
+## Appelé par le joueur quand il percute l'objet encore figé : la physique s'enclenche s'il y a un support dessous
+## (sinon c'est un objet posé sur un meuble sans collider : il reste du décor).
+func touch() -> void:
+	if not freeze or _broken:
+		return
+	var from := global_position + Vector3.UP * 0.05
+	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3.DOWN * 0.4, 1, [get_rid()])
+	if not get_world_3d().direct_space_state.intersect_ray(q).is_empty():
+		freeze = false
+
 func _grab() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:

@@ -9,6 +9,8 @@ extends Node
 
 const PropBodyScript := preload("res://user/Levels/Morrowind/scripts/prop_body.gd")
 
+const PROP_LAYER := 1 << 20                # couche physique des objets de décor (voir player.gd)
+
 const GLOW_WORDS := ["lantern", "lightpost", "lamp", "candle", "torch", "sconce", "chandelier"]
 const NO_HALO_WORDS := ["lightpost", "candle", "torch"]            # lumière seule, pas de halo sur le mesh
 const SWAY_WORDS := ["lantern"]                                     # suspendues
@@ -18,7 +20,8 @@ const PHYS_WORDS := ["bottle", "cup", "bowl", "plate", "potion", "mug", "goblet"
 const NOT_PHYS_WORDS := ["-colonly", "candle", "lantern", "plant", "light", "bed", "rack", "shelf", "table", "post"]
 const PHYS_MIN_SIZE := 0.04               # m : plus petit = poussière
 const PHYS_MAX_SIZE := 0.5                # m : plus grand = meuble
-const WAKE_RADIUS := 3.5                  # m : les objets se « réveillent » à cette distance du joueur
+const BODY_NEAR := 5.0                   # m : un corps (figé) est créé quand le joueur est plus près
+const BODY_FAR := 8.0                    # m : et détruit au-delà, tant qu'il n'a pas été touché
 const SWAY_RADIUS := 40.0                 # m : balancement actif autour de la caméra
 const LIGHT_RANGE := 7.0
 const LIGHT_ENERGY := 1.3
@@ -29,8 +32,9 @@ const INDOOR_MIN_Y := 3000.0
 
 var _lights: Array = []        # {light, base, outdoor}
 var _sway: Array = []          # {mi, base, pivot, gpos, amp, freq, phase}
-var _bodies: Array = []        # {body, home, state} state : 0 figé, 1 libre, 2 refusé (pas de support)
-var _halo: StandardMaterial3D
+var _bodies: Array = []        # {mi, gpos, home, body (null si non instancié), woken}
+var _glow_mats := {}           # (matériau source, extérieur) -> copie émissive partagée
+var _glow_list: Array = []     # {mat, outdoor}
 var _t := 0.0
 var _acc := 0.0
 var _sun: Light3D
@@ -40,14 +44,6 @@ func setup(roots: Array) -> void:
 	if OS.get_environment("CYBERREALM_NO_PROPS") == "1":
 		return
 	_sun = get_parent().get_parent().get_node_or_null("Sun") as Light3D
-	_halo = StandardMaterial3D.new()
-	_halo.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_halo.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_halo.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	_halo.albedo_color = Color(0.0, 0.0, 0.0, 1.0)
-	_halo.emission_enabled = true
-	_halo.emission = Color(1.0, 0.55, 0.2)
-	_halo.emission_energy_multiplier = 0.5
 	for r in roots:
 		if r == null:
 			continue
@@ -96,15 +92,42 @@ func _add_glow(mi: MeshInstance3D, low: String) -> void:
 	light.position = mi.get_aabb().get_center()
 	mi.set_meta("lan_skip_children", true)
 	mi.add_child(light)
+	var outdoor := mi.global_position.y < INDOOR_MIN_Y
 	if not _has_word(low, NO_HALO_WORDS):
-		mi.material_overlay = _halo
-	_lights.append({"light": light, "base": LIGHT_ENERGY, "outdoor": mi.global_position.y < INDOOR_MIN_Y})
+		_make_glow(mi, outdoor)
+	_lights.append({"light": light, "base": LIGHT_ENERGY, "outdoor": outdoor})
+
+# La lanterne elle-même s'illumine : copie des matériaux du mesh avec émission = sa propre texture (les
+# émissions d'origine sont à 0 dans l'export). Une copie par matériau source, partagée entre les instances.
+func _make_glow(mi: MeshInstance3D, outdoor: bool) -> void:
+	for i in mi.mesh.get_surface_count():
+		if mi.get_surface_override_material(i) != null:
+			continue                                  # déjà traité (niveau reçu en LAN, déjà baké)
+		var src := mi.mesh.surface_get_material(i) as StandardMaterial3D
+		if src == null:
+			continue
+		var key := [src, outdoor]
+		if not _glow_mats.has(key):
+			var m := src.duplicate() as StandardMaterial3D
+			m.emission_enabled = true
+			m.emission = Color(1.0, 0.62, 0.3)
+			m.emission_energy_multiplier = 1.6
+			if m.albedo_texture != null:
+				m.emission_texture = m.albedo_texture
+				m.emission = Color(1.0, 0.8, 0.55)
+			m.emission_operator = BaseMaterial3D.EMISSION_OP_ADD
+			_glow_mats[key] = m
+			_glow_list.append({"mat": m, "outdoor": outdoor})
+		mi.set_surface_override_material(i, _glow_mats[key])
 
 # Extérieur : allumées quand le soleil/la lune est faible. Appelé quelques fois par seconde.
 func _update_lights() -> void:
 	var dark := 1.0
 	if _sun != null:
 		dark = 1.0 - smoothstep(0.1, 0.9, _sun.light_energy)
+	for g in _glow_list:
+		if g.outdoor:
+			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.15, 1.6, dark)
 	for d in _lights:
 		var l := d.light as OmniLight3D
 		if not is_instance_valid(l):
@@ -144,6 +167,10 @@ func _update_sway() -> void:
 				* Transform3D(Basis.IDENTITY, -p)
 
 # ── Objets physiques ─────────────────────────────────────────────────
+# Les ~4000 objets du niveau ne sont PAS tous des corps physiques (limite Jolt, temps de chargement) : au
+# chargement on ne fait que repérer les candidats ; le corps (figé, boîte englobante) n'est créé que quand le
+# joueur est à moins de BODY_NEAR m et détruit au-delà de BODY_FAR m tant qu'il n'a pas été touché. Figé, il ne
+# bouge pas : la physique ne s'enclenche que quand le joueur le touche (touch(), appelé par player.gd) ou le prend.
 
 func _add_rigid(mi: MeshInstance3D) -> void:
 	var sc := mi.global_transform.basis.get_scale().abs()
@@ -151,24 +178,29 @@ func _add_rigid(mi: MeshInstance3D) -> void:
 	var ext := maxf(size.x, maxf(size.y, size.z))
 	if ext < PHYS_MIN_SIZE or ext > PHYS_MAX_SIZE or _has_collider(mi):
 		return
-	var shape := mi.mesh.create_convex_shape(true, true)
-	if shape == null or shape.points.size() < 4:
-		return
-	var pts := shape.points
-	for i in pts.size():
-		pts[i] *= sc
-	shape.points = pts
+	_bodies.append({"mi": mi, "gpos": mi.global_position, "home": mi.global_transform, "body": null, "woken": false})
+
+func _make_body(d: Dictionary) -> void:
+	var mi := d.mi as MeshInstance3D
+	var sc := mi.global_transform.basis.get_scale().abs()
+	var aabb := mi.get_aabb()
+	var size := aabb.size * sc
+	var shape := BoxShape3D.new()
+	shape.size = size.max(Vector3.ONE * 0.02)
 	var body := RigidBody3D.new()
 	body.set_script(PropBodyScript)
 	body.set("mesh_node", mi)
 	body.name = "PropBody"
 	body.mass = clampf(size.x * size.y * size.z * 600.0, 0.1, 4.0)
-	body.freeze = true                              # figé tant qu'on n'est pas proche (et qu'un support existe)
+	body.collision_layer = PROP_LAYER            # couche à part : le joueur ne subit jamais leur mouvement (player.gd)
+	body.collision_mask = 1 | PROP_LAYER
+	body.freeze = true
 	body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
 	body.linear_damp = 0.4
 	body.angular_damp = 1.5
 	var cs := CollisionShape3D.new()
 	cs.shape = shape
+	cs.position = aabb.get_center() * sc
 	body.add_child(cs)
 	var par := mi.get_parent()
 	par.set_meta("lan_skip_children", true)
@@ -179,37 +211,35 @@ func _add_rigid(mi: MeshInstance3D) -> void:
 	rt.update_scale = false
 	body.add_child(rt)
 	rt.remote_path = rt.get_path_to(mi)
-	_bodies.append({"body": body, "home": body.global_transform, "state": 0})
+	d.body = body
 
-func _wake_bodies() -> void:
+func _update_bodies() -> void:
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:
 		return
 	var cp := cam.global_position
+	var near2 := BODY_NEAR * BODY_NEAR
+	var far2 := BODY_FAR * BODY_FAR
 	for d in _bodies:
-		if not is_instance_valid(d.body):
+		var body = d.body
+		if body != null and not is_instance_valid(body):
+			d.body = null
 			continue
-		var body := d.body as RigidBody3D
-		if d.state != 1 and not body.freeze:      # pris en main : désormais libre
-			d.state = 1
-		if d.state == 1:
-			if body.global_position.y < (d.home as Transform3D).origin.y - 15.0:   # traversé le décor : on le remet
-				body.freeze = true
-				body.global_transform = d.home
-				d.state = 2
-			continue
-		if d.state != 0 or body.global_position.distance_squared_to(cp) > WAKE_RADIUS * WAKE_RADIUS:
-			continue
-		if not body.is_inside_tree() or not body.can_process():
-			continue
-		var from := body.global_position + Vector3.UP * 0.05
-		var q := PhysicsRayQueryParameters3D.create(from, from + Vector3.DOWN * 0.3, 1, [body.get_rid()])
-		var hit := body.get_world_3d().direct_space_state.intersect_ray(q)
-		if hit.is_empty():
-			d.state = 2                              # rien dessous (meuble sans collider) : reste du décor
-		else:
-			body.freeze = false
-			d.state = 1
+		if body != null:
+			var rb := body as RigidBody3D
+			if not rb.freeze:
+				d.woken = true                       # touché / pris : il reste, indépendant de la distance
+				if rb.global_position.y < (d.home as Transform3D).origin.y - 15.0:    # traversé le décor
+					rb.freeze = true
+					rb.global_transform = d.home
+					d.woken = false
+			elif not d.woken and (d.gpos as Vector3).distance_squared_to(cp) > far2:
+				(d.mi as MeshInstance3D).global_transform = d.home
+				rb.queue_free()
+				d.body = null
+		elif not d.woken and (d.gpos as Vector3).distance_squared_to(cp) < near2 \
+				and is_instance_valid(d.mi) and (d.mi as MeshInstance3D).is_visible_in_tree():
+			_make_body(d)
 
 func _process(delta: float) -> void:
 	_t += delta
@@ -222,4 +252,4 @@ func _physics_process(delta: float) -> void:
 		return
 	_acc = 0.0
 	_update_lights()
-	_wake_bodies()
+	_update_bodies()
