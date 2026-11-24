@@ -243,6 +243,7 @@ const DOOR_WORDS := ["door"]              # noms prioritaires pour les sorties
 const EXIT_WORDS := ["grate", "hatch", "gate", "exit", "trap", "entrance"]
 const NOT_DOORS := ["jamb", "frame", "doorway", "arch", "indoor", "outdoor"]   # décor autour de la porte, pas la porte
 
+var _body_mesh := {}      # collider de porte -> son MeshInstance3D
 var _cands := {}          # clé de portée -> Array de {mesh, body, claimed}
 
 func _build_doors(level: Node) -> void:
@@ -319,6 +320,7 @@ func _build_doors(level: Node) -> void:
 				if sbody != null:
 					c["claimed"] = true
 					c["kind"] = "swing"
+					_body_mesh[sbody] = c["mesh"]
 					_bind(sbody, "", {"kind": "swing", "mesh": c["mesh"]})
 
 # Vrai battant (pivot sur la charnière) : « door » sans être une trappe, grille, etc.
@@ -409,6 +411,7 @@ func _take(c: Dictionary, kind := "enter", dest := "") -> StaticBody3D:
 		return null
 	var body := _body_of(c)
 	if body != null:
+		_body_mesh[body] = c["mesh"]
 		c["claimed"] = true
 		c["kind"] = kind
 		c["dest"] = dest
@@ -434,6 +437,32 @@ func _bind(body: StaticBody3D, prompt: String, data: Dictionary) -> void:
 	body.manager = self
 	body.prompt = prompt
 	body.data = data
+	_add_pick_proxy(body)
+
+# Zone de visée un peu plus grande que la porte. Une trappe est souvent logée dans le plafond (ou le sol) de
+# la coque : le collider de la coque se trouve alors devant le sien et intercepte le rayon d'interaction.
+# Le proxy est sur une couche que le joueur ne heurte pas (rayons seulement) ; il suit la porte quand elle pivote.
+const PICK_MARGIN := 0.12
+
+func _add_pick_proxy(body: StaticBody3D) -> void:
+	var mi := _body_mesh.get(body) as MeshInstance3D
+	if mi == null or mi.mesh == null or body.has_node("PickProxy"):
+		return
+	var box := mi.mesh.get_aabb().grow(PICK_MARGIN)
+	var proxy := StaticBody3D.new()
+	proxy.name = "PickProxy"
+	proxy.set_script(DoorScript)
+	proxy.forward = body
+	proxy.collision_layer = DOOR_PHYS_LAYER
+	proxy.collision_mask = 0
+	var shape := BoxShape3D.new()
+	shape.size = box.size
+	var cs := CollisionShape3D.new()
+	cs.shape = shape
+	cs.position = box.get_center()
+	proxy.add_child(cs)
+	body.set_meta("lan_skip_children", true)   # jamais baké : recréé par chaque machine
+	body.add_child(proxy)
 
 func _target_key(marker: Node) -> String:
 	var t := String(marker.get_meta("target_scene", ""))

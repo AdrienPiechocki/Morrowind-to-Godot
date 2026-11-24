@@ -13,6 +13,7 @@ const OPEN_TIME := 0.45
 const PROBE_RADIUS := 0.25
 
 var manager: Node = null
+var forward: Node = null   # zone de visée (PickProxy) : renvoie vers la porte
 var prompt := ""
 var data := {}      # cible/sens de la porte (runtime, jamais sérialisé)
 
@@ -24,12 +25,17 @@ var _tween: Tween = null
 var _angle := 0.0
 
 func interact(player_id: int) -> void:
+	if forward != null and is_instance_valid(forward):
+		forward.call("interact", player_id)
+		return
 	if data.get("kind", "") == "swing":
 		_toggle()
 	elif manager != null and is_instance_valid(manager):
 		manager.use_door(self, player_id)
 
 func get_interact_prompt() -> String:
+	if forward != null and is_instance_valid(forward):
+		return forward.call("get_interact_prompt")
 	if data.get("kind", "") == "swing":
 		return "Close door" if _open else "Open door"
 	return prompt
