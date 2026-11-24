@@ -3,8 +3,11 @@ extends Node
 ##   - lanternes / lampes : lumière chaude + halo émissif (extérieur : seulement quand le soleil est bas) ;
 ##   - lanternes suspendues : léger balancement (pendule autour du point d'accroche) ;
 ##   - petits objets sans collision (bouteilles, bols, livres…) : RigidBody3D que le joueur peut pousser.
+## Les objets physiques se prennent / lancent / cassent (prop_body.gd).
 ## Les nœuds créés n'ont pas d'owner et leur parent porte « lan_skip_children » : le LevelBaker les ignore,
 ## chaque machine les reconstruit au chargement (comme les portes). CYBERREALM_NO_PROPS=1 désactive tout.
+
+const PropBodyScript := preload("res://user/Levels/Morrowind/scripts/prop_body.gd")
 
 const GLOW_WORDS := ["lantern", "lightpost", "lamp", "candle", "torch", "sconce", "chandelier"]
 const NO_HALO_WORDS := ["lightpost", "candle", "torch"]            # lumière seule, pas de halo sur le mesh
@@ -156,6 +159,8 @@ func _add_rigid(mi: MeshInstance3D) -> void:
 		pts[i] *= sc
 	shape.points = pts
 	var body := RigidBody3D.new()
+	body.set_script(PropBodyScript)
+	body.set("mesh_node", mi)
 	body.name = "PropBody"
 	body.mass = clampf(size.x * size.y * size.z * 600.0, 0.1, 4.0)
 	body.freeze = true                              # figé tant qu'on n'est pas proche (et qu'un support existe)
@@ -182,9 +187,11 @@ func _wake_bodies() -> void:
 		return
 	var cp := cam.global_position
 	for d in _bodies:
-		var body := d.body as RigidBody3D
-		if not is_instance_valid(body):
+		if not is_instance_valid(d.body):
 			continue
+		var body := d.body as RigidBody3D
+		if d.state != 1 and not body.freeze:      # pris en main : désormais libre
+			d.state = 1
 		if d.state == 1:
 			if body.global_position.y < (d.home as Transform3D).origin.y - 15.0:   # traversé le décor : on le remet
 				body.freeze = true

@@ -1,0 +1,144 @@
+extends RigidBody3D
+## Objet de décor physique (créé par props.gd) : clic gauche = prendre, puis clic gauche = lancer, clic droit =
+## poser. Lancé assez fort contre quelque chose, il se brise en éclats. Tout est LOCAL à la machine du joueur qui
+## agit (interact() est relayé en LAN mais seul l'appelant, pid == son propre id, réagit) : comme le reste de la
+## physique du décor, l'état n'est pas synchronisé.
+
+const HOLD_DIST := 1.1            # m devant la caméra
+const HOLD_GAIN := 16.0           # raideur du suivi (vitesse = écart * gain)
+const HOLD_MAX_SPEED := 12.0
+const LOSE_DIST := 2.2            # m : l'objet est resté coincé loin de la main -> on le lâche
+const THROW_SPEED := 11.0
+const BREAK_SPEED := 5.5          # m/s de vitesse d'impact (composante normale) pour casser un objet lancé
+const ARMED_TIME := 6.0           # s pendant lesquelles un objet lancé peut casser
+const SHARDS := 7
+
+var mesh_node: MeshInstance3D     # mesh d'origine, qui suit le corps (RemoteTransform3D)
+var _holder: Camera3D = null
+var _player: CharacterBody3D = null
+var _armed := 0.0
+var _v1 := Vector3.ZERO
+var _v2 := Vector3.ZERO
+var _broken := false
+
+func _ready() -> void:
+	contact_monitor = true
+	max_contacts_reported = 4
+	add_to_group("prop_body")
+
+func get_interact_prompt() -> String:
+	return "Left click: throw   Right click: drop" if _holder != null else "Left click: take"
+
+func interact(player_id: int) -> void:
+	if player_id != multiplayer.get_unique_id() or _broken:
+		return
+	if _holder != null:
+		_throw()
+	else:
+		_grab()
+
+func _grab() -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	# Un seul objet en main.
+	for b in get_tree().get_nodes_in_group("prop_body"):
+		if b != self and b.get("_holder") != null:
+			return
+	_holder = cam
+	var n: Node = cam
+	while n != null and not (n is CharacterBody3D):
+		n = n.get_parent()
+	_player = n as CharacterBody3D
+	if _player != null:
+		add_collision_exception_with(_player)
+	freeze = false
+	sleeping = false
+	gravity_scale = 0.0
+	_armed = 0.0
+
+func _release() -> void:
+	if _holder == null:
+		return
+	_holder = null
+	gravity_scale = 1.0
+	if _player != null and is_instance_valid(_player):
+		remove_collision_exception_with(_player)
+	_player = null
+
+func _throw() -> void:
+	var cam := _holder
+	var pv := Vector3.ZERO
+	if _player != null and is_instance_valid(_player):
+		pv = _player.velocity
+	_release()
+	var dir := -cam.global_basis.z
+	linear_velocity = dir * THROW_SPEED + pv + Vector3.UP * 0.8
+	angular_velocity = Vector3(randf_range(-6, 6), randf_range(-6, 6), randf_range(-6, 6))
+	_armed = ARMED_TIME
+
+func _physics_process(delta: float) -> void:
+	if _armed > 0.0:
+		_armed -= delta
+	if _holder == null:
+		return
+	if not is_instance_valid(_holder) or not is_visible_in_tree() or Input.is_action_just_pressed("right_click", true):
+		_release()
+		return
+	var target := _holder.global_position - _holder.global_basis.z * HOLD_DIST
+	var d := target - global_position
+	if d.length() > LOSE_DIST:
+		_release()
+		return
+	linear_velocity = (d * HOLD_GAIN).limit_length(HOLD_MAX_SPEED)
+	angular_velocity *= 0.8
+
+func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
+	if _armed > 0.0 and not _broken:
+		var best := 0.0
+		for i in state.get_contact_count():
+			var n := state.get_contact_local_normal(i)
+			var rel := state.get_contact_collider_velocity_at_position(i)
+			best = maxf(best, maxf(absf((_v1 - rel).dot(n)), absf((_v2 - rel).dot(n))))
+		if best > BREAK_SPEED:
+			_broken = true
+			call_deferred("_shatter", state.linear_velocity)
+	_v2 = _v1
+	_v1 = state.linear_velocity
+
+func _shatter(vel: Vector3) -> void:
+	_release()
+	var origin := global_position
+	var mat: Material = null
+	var size := 0.1
+	if mesh_node != null and is_instance_valid(mesh_node):
+		mat = mesh_node.get_active_material(0)
+		size = clampf(mesh_node.get_aabb().size.length() * mesh_node.global_transform.basis.get_scale().x, 0.06, 0.5)
+		mesh_node.visible = false
+	var parent := get_parent()
+	for i in SHARDS:
+		var s := RigidBody3D.new()
+		s.collision_layer = 0              # n'entrent en collision qu'avec le décor, jamais avec le joueur
+		s.collision_mask = 1
+		s.mass = 0.05
+		var bm := BoxMesh.new()
+		bm.size = Vector3(randf_range(0.3, 0.8), randf_range(0.1, 0.3), randf_range(0.3, 0.8)) * size * 0.35
+		bm.material = mat
+		var mi := MeshInstance3D.new()
+		mi.mesh = bm
+		s.add_child(mi)
+		var cs := CollisionShape3D.new()
+		var sh := BoxShape3D.new()
+		sh.size = bm.size
+		cs.shape = sh
+		s.add_child(cs)
+		parent.add_child(s)
+		s.global_position = origin + Vector3(randf_range(-1, 1), randf_range(-0.5, 1), randf_range(-1, 1)) * size * 0.25
+		s.global_basis = Basis.from_euler(Vector3(randf(), randf(), randf()) * TAU)
+		s.linear_velocity = vel * 0.3 + Vector3(randf_range(-1, 1), randf_range(0.5, 2.5), randf_range(-1, 1)) * 1.5
+		s.angular_velocity = Vector3(randf_range(-8, 8), randf_range(-8, 8), randf_range(-8, 8))
+		var tw := s.create_tween()
+		tw.tween_interval(randf_range(3.0, 5.0))
+		tw.tween_property(s, "scale", Vector3.ONE * 0.01, 1.0)
+		tw.tween_callback(s.queue_free)
+	queue_free()
