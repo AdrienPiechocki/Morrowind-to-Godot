@@ -46,7 +46,11 @@ func touch() -> void:
 		freeze = false
 
 func _grab() -> void:
-	var cam := get_viewport().get_camera_3d()
+	# Caméra « tête » du joueur (pas la caméra courante : en vue 3e personne elle est reculée derrière lui).
+	var pl := get_tree().get_first_node_in_group("player")
+	var cam := (pl.get_node_or_null("Camera3D") if pl != null else null) as Camera3D
+	if cam == null:
+		cam = get_viewport().get_camera_3d()
 	if cam == null:
 		return
 	# Un seul objet en main.
