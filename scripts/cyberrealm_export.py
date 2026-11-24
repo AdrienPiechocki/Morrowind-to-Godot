@@ -136,6 +136,7 @@ def main():
     e("Script", "scripts/interiors.gd", "interiors_gd")
     e("Script", "scripts/level_options.gd", "lopt_gd")
     e("Script", "scripts/level_environment.gd", "lenv_gd")
+    e("Script", "scripts/waterfalls.gd", "wfall_gd")
     for i, n in enumerate(names):
         e("PackedScene", f"interiors/{n}.tscn", f"int{i}")
     last = [mm for mm in re.finditer(r"\[ext_resource[^\n]*\]\n", s)][-1].end()
@@ -163,6 +164,7 @@ def main():
     s += "".join("%s = %s\n" % kv for kv in env_props.items())
     s += '\n[node name="LevelOptions" type="Node" parent="."]\nscript = ExtResource("lopt_gd")\n'
     s += '\n[node name="Interiors" type="Node3D" parent="."]\nscript = ExtResource("interiors_gd")\n'
+    s += '\n[node name="Waterfalls" type="Node" parent="."]\nscript = ExtResource("wfall_gd")\n'
     for i, n in enumerate(names):
         x, z = (i % 10) * 800.0, (i // 10) * 800.0
         s += ('\n[node name="%s" parent="Interiors" instance=ExtResource("int%d")]\n'
