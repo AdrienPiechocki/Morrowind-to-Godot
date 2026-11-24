@@ -1,6 +1,6 @@
 extends RigidBody3D
 ## Objet de décor physique (créé par props.gd) : clic gauche = prendre, puis clic gauche = lancer, clic droit =
-## poser. Lancé assez fort contre quelque chose, il se brise en éclats. Tout est LOCAL à la machine du joueur qui
+## poser. Heurté assez fort (vitesse d'impact > BREAK_SPEED), il se brise en éclats. Tout est LOCAL à la machine du joueur qui
 ## agit (interact() est relayé en LAN mais seul l'appelant, pid == son propre id, réagit) : comme le reste de la
 ## physique du décor, l'état n'est pas synchronisé.
 
@@ -9,14 +9,12 @@ const HOLD_GAIN := 16.0           # raideur du suivi (vitesse = écart * gain)
 const HOLD_MAX_SPEED := 12.0
 const LOSE_DIST := 2.2            # m : l'objet est resté coincé loin de la main -> on le lâche
 const THROW_SPEED := 11.0
-const BREAK_SPEED := 5.5          # m/s de vitesse d'impact (composante normale) pour casser un objet lancé
-const ARMED_TIME := 6.0           # s pendant lesquelles un objet lancé peut casser
+const BREAK_SPEED := 5.5          # m/s de vitesse d'impact (composante normale) pour casser un objet
 const SHARDS := 7
 
 var mesh_node: MeshInstance3D     # mesh d'origine, qui suit le corps (RemoteTransform3D)
 var _holder: Camera3D = null
 var _player: CharacterBody3D = null
-var _armed := 0.0
 var _v1 := Vector3.ZERO
 var _v2 := Vector3.ZERO
 var _broken := false
@@ -65,7 +63,6 @@ func _grab() -> void:
 	freeze = false
 	sleeping = false
 	gravity_scale = 0.0
-	_armed = 0.0
 
 func _release() -> void:
 	if _holder == null:
@@ -85,11 +82,8 @@ func _throw() -> void:
 	var dir := -cam.global_basis.z
 	linear_velocity = dir * THROW_SPEED + pv + Vector3.UP * 0.8
 	angular_velocity = Vector3(randf_range(-6, 6), randf_range(-6, 6), randf_range(-6, 6))
-	_armed = ARMED_TIME
 
 func _physics_process(delta: float) -> void:
-	if _armed > 0.0:
-		_armed -= delta
 	if _holder == null:
 		return
 	if not is_instance_valid(_holder) or not is_visible_in_tree() or Input.is_action_just_pressed("right_click", true):
@@ -104,12 +98,14 @@ func _physics_process(delta: float) -> void:
 	angular_velocity *= 0.8
 
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
-	if _armed > 0.0 and not _broken:
+	# Casse selon la VITESSE d'impact seulement (lancé, tombé, projeté…), jamais selon la distance parcourue.
+	if not _broken and _holder == null:
 		var best := 0.0
 		for i in state.get_contact_count():
 			var other := state.get_contact_collider_object(i) as RigidBody3D
-			if other != null and other != self and other.freeze and other.has_method("touch"):
-				call_deferred("_wake_other", other, state.linear_velocity)    # lancé sur un autre objet figé
+			if other != null and other != self and other.freeze and other.has_method("touch") \
+					and maxf(_v1.length(), _v2.length()) > 1.0:
+				call_deferred("_wake_other", other, _v1 if _v1.length() > _v2.length() else _v2)    # lancé sur un autre objet figé
 			var n := state.get_contact_local_normal(i)
 			var rel := state.get_contact_collider_velocity_at_position(i)
 			best = maxf(best, maxf(absf((_v1 - rel).dot(n)), absf((_v2 - rel).dot(n))))
