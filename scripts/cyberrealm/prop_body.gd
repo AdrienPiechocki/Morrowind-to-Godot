@@ -107,6 +107,9 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 	if _armed > 0.0 and not _broken:
 		var best := 0.0
 		for i in state.get_contact_count():
+			var other := state.get_contact_collider_object(i) as RigidBody3D
+			if other != null and other != self and other.freeze and other.has_method("touch"):
+				call_deferred("_wake_other", other, state.linear_velocity)    # lancé sur un autre objet figé
 			var n := state.get_contact_local_normal(i)
 			var rel := state.get_contact_collider_velocity_at_position(i)
 			best = maxf(best, maxf(absf((_v1 - rel).dot(n)), absf((_v2 - rel).dot(n))))
@@ -115,6 +118,13 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 			call_deferred("_shatter", state.linear_velocity)
 	_v2 = _v1
 	_v1 = state.linear_velocity
+
+func _wake_other(other: RigidBody3D, vel: Vector3) -> void:
+	if not is_instance_valid(other):
+		return
+	other.call("touch")
+	if not other.freeze:
+		other.apply_central_impulse(vel * other.mass * 0.4)
 
 func _shatter(vel: Vector3) -> void:
 	_release()

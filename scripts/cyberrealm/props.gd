@@ -14,12 +14,17 @@ const PROP_LAYER := 1 << 20                # couche physique des objets de déco
 const GLOW_WORDS := ["lantern", "lightpost", "lamp", "torch", "sconce", "chandelier"]
 const NO_HALO_WORDS := ["lightpost", "torch"]            # lumière seule, pas de halo sur le mesh
 const SWAY_WORDS := ["lantern"]                                     # suspendues
-const PHYS_WORDS := ["bottle", "cup", "bowl", "plate", "potion", "mug", "goblet", "tankard", "pitcher", "jug",
-	"flask", "vial", "bk_", "book", "scroll", "sc_paper", "ingred", "apparatus", "stoneware", "redware", "pot_",
-	"skull", "spoon", "fork", "knife", "mortar"]
-const NOT_PHYS_WORDS := ["-colonly", "candle", "lantern", "plant", "light", "bed", "rack", "shelf", "table", "post"]
+# Tout objet SANS collider devient physique, sauf la flore, la structure et le décor souple/lumineux.
+const NOT_PHYS_WORDS := ["-colonly", "plant", "flora", "grass", "tree", "bush", "shrub", "leaf", "leaves", "fern",
+	"flower", "kelp", "weed", "reed", "moss", "mushroom", "fungus", "vine", "root", "stalk", "bloom", "petal",
+	"lichen", "cactus", "coral", "bramble", "heather", "wickwheat", "terrain", "land_",
+	"wall", "floor", "flr", "door", "stair", "ceil", "beam", "arch", "pillar", "column", "bridge", "rock", "boulder",
+	"rug", "rope", "banner", "curtain", "tapestry", "cloth", "web", "water", "fire", "smoke", "steam", "light",
+	"lantern", "candle", "lamp", "torch", "sign", "post"]
+const NOT_PHYS_PREFIXES := ["in_", "ex_"]                          # modules d'architecture Morrowind
+const STATIC_BOX_WORDS := ["crate_02"]                             # caisses carrées : statiques, avec collision
 const PHYS_MIN_SIZE := 0.04               # m : plus petit = poussière
-const PHYS_MAX_SIZE := 0.5                # m : plus grand = meuble
+const PHYS_MAX_SIZE := 0.6                # m : plus grand = meuble
 const BODY_NEAR := 5.0                   # m : un corps (figé) est créé quand le joueur est plus près
 const BODY_FAR := 8.0                    # m : et détruit au-delà, tant qu'il n'a pas été touché
 const SWAY_RADIUS := 40.0                 # m : balancement actif autour de la caméra
@@ -56,6 +61,12 @@ static func _has_word(s: String, words: Array) -> bool:
 			return true
 	return false
 
+static func _starts_with_any(s: String, prefixes: Array) -> bool:
+	for p in prefixes:
+		if s.begins_with(p):
+			return true
+	return false
+
 func _has_collider(mi: MeshInstance3D) -> bool:
 	var par := mi.get_parent()
 	for i in range(mi.get_index() + 1, mini(mi.get_index() + 3, par.get_child_count())):
@@ -73,7 +84,9 @@ func _process_mesh(mi: MeshInstance3D) -> void:
 		_add_glow(mi, low)
 		if _has_word(low, SWAY_WORDS):
 			_add_sway(mi, low)
-	elif _has_word(low, PHYS_WORDS) and not _has_word(low, NOT_PHYS_WORDS):
+	elif _has_word(low, STATIC_BOX_WORDS) and not low.contains("-colonly"):
+		_add_static_box(mi)
+	elif not _has_word(low, NOT_PHYS_WORDS) and not _starts_with_any(low, NOT_PHYS_PREFIXES):
 		_add_rigid(mi)
 
 # ── Lumière ──────────────────────────────────────────────────────────
@@ -179,6 +192,25 @@ func _add_rigid(mi: MeshInstance3D) -> void:
 	if ext < PHYS_MIN_SIZE or ext > PHYS_MAX_SIZE or _has_collider(mi):
 		return
 	_bodies.append({"mi": mi, "gpos": mi.global_position, "home": mi.global_transform, "body": null, "woken": false})
+
+# Collision statique en boîte englobante (caisses carrées sans collider d'origine).
+func _add_static_box(mi: MeshInstance3D) -> void:
+	if _has_collider(mi):
+		return
+	var sc := mi.global_transform.basis.get_scale().abs()
+	var aabb := mi.get_aabb()
+	var box := BoxShape3D.new()
+	box.size = aabb.size * sc
+	var sb := StaticBody3D.new()
+	sb.name = "PropStatic"
+	var cs := CollisionShape3D.new()
+	cs.shape = box
+	cs.position = aabb.get_center() * sc
+	sb.add_child(cs)
+	var par := mi.get_parent()
+	par.set_meta("lan_skip_children", true)
+	par.add_child(sb)
+	sb.global_transform = Transform3D(mi.global_transform.basis.orthonormalized(), mi.global_position)
 
 func _make_body(d: Dictionary) -> void:
 	var mi := d.mi as MeshInstance3D
