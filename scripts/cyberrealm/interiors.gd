@@ -27,6 +27,7 @@ extends Node3D
 ## avatar se téléporter (sa position est déjà synchronisée par le LAN).
 
 const DoorScript := preload("res://user/Levels/Morrowind/scripts/door.gd")
+const PropsScript := preload("res://user/Levels/Morrowind/scripts/props.gd")
 
 const INTERIOR_LAYER := 2                 # couche visuelle (bit 2) des intérieurs
 const EXTERIOR_LAYER := 4                 # couche visuelle 3 : monde extérieur (masqué de la caméra dans un intérieur)
@@ -75,6 +76,11 @@ func _ready() -> void:
 		it.process_mode = Node.PROCESS_MODE_INHERIT
 		_prepare_interior(key, it)
 	_build_doors(level)
+	# Décor vivant (lanternes, balancement, objets physiques) : nœud runtime, ignoré du bake LAN (voir props.gd).
+	var props := PropsScript.new()
+	props.name = "Props"
+	add_child(props)
+	props.setup([ext_model] + _interiors.values())
 	for key in _interiors:
 		_deactivate(key)
 	if _weather != null:
