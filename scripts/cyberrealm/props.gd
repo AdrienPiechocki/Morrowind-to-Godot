@@ -13,7 +13,7 @@ const PROP_LAYER := 1 << 20                # couche physique des objets de déco
 
 # Seules les sources AVEC émission reçoivent une lumière (lightpost, torch… ont un support : lumière mal placée).
 const GLOW_WORDS := ["lantern", "lamp", "sconce", "chandelier"]
-const NO_GLOW_NAMES := ["light_de_lamp_01"]                         # sans lumière ni émission
+const NO_GLOW_NAMES := ["light_de_lamp"]                         # sans lumière ni émission
 const SWAY_WORDS := ["lantern"]                                     # suspendues
 # Tout objet SANS collider devient physique, sauf la flore, la structure et le décor souple/lumineux.
 const NOT_PHYS_WORDS := ["-colonly", "plant", "flora", "grass", "tree_", "_tree", "bush", "shrub", "leaf", "leaves",
