@@ -578,6 +578,8 @@ if [ "$USE_DIRECT" = "1" ]; then
         exterior) WORLD_ARGS+=(--mode exterior --grid "$GRID") ;;
         *)        WORLD_ARGS+=(--mode interior --cell "$CELL_NAME") ;;
     esac
+    [ -n "${MW2G_TEX_PX:-}" ] && WORLD_ARGS+=(--tex-px "$MW2G_TEX_PX")
+    [ -n "${MW2G_TEX_MAX_SIDE:-}" ] && WORLD_ARGS+=(--tex-max-side "$MW2G_TEX_MAX_SIDE")
     [ -n "$VFLAG" ] && WORLD_ARGS+=(--verbose)
     python3 scripts/build_world.py "${WORLD_ARGS[@]}" || fail "Direct conversion failed."
     step 8 "Export"
