@@ -1,6 +1,6 @@
 extends RigidBody3D
 ## Objet de décor physique (créé par props.gd) : clic gauche = prendre, puis clic gauche = lancer, clic droit =
-## poser. Heurté assez fort (vitesse d'impact > BREAK_SPEED), il se brise en éclats.
+## poser (lancer / poser n'exigent pas de viser l'objet tenu). Heurté assez fort (vitesse d'impact > BREAK_SPEED), il se brise en éclats.
 ##
 ## Trois modes (net_mode), choisis par props.gd :
 ##   LOCAL  — solo / hôte LAN : la physique est locale à la machine du joueur qui agit (état non synchronisé).
@@ -36,6 +36,10 @@ var _hold_target := Vector3.ZERO
 var _hold_stamp := 0
 var _hold_tick := 0               # CLIENT : cadence d'envoi de la cible de prise
 var _last_touch_msec := 0
+# Dernier lancer (tous objets) : le clic qui lance ne doit pas aussi reprendre l'objet (ou un autre) via le
+# raycast de world_interactor, qui traite le même clic dans sa propre frame.
+static var _throw_msec := -1000
+var _grab_msec := -1000           # le clic qui prend peut encore être « just pressed » au pas physique suivant
 
 func _ready() -> void:
 	contact_monitor = net_mode != CLIENT
@@ -47,6 +51,8 @@ func get_interact_prompt() -> String:
 
 func interact(player_id: int) -> void:
 	if player_id != multiplayer.get_unique_id() or _broken:
+		return
+	if Time.get_ticks_msec() - _throw_msec < 150:
 		return
 	if _holder != null:
 		_throw()
@@ -93,6 +99,8 @@ func _grab() -> void:
 		if b != self and b.get("_holder") != null:
 			return
 	_holder = cam
+	_grab_msec = Time.get_ticks_msec()
+	add_to_group("interact_held")      # world_interactor affiche « throw / drop » même sans viser l'objet
 	var n: Node = cam
 	while n != null and not (n is CharacterBody3D):
 		n = n.get_parent()
@@ -110,6 +118,7 @@ func _release() -> void:
 	if _holder == null:
 		return
 	_holder = null
+	remove_from_group("interact_held")
 	if net_mode != CLIENT:
 		gravity_scale = 1.0
 	if _player != null and is_instance_valid(_player):
@@ -122,6 +131,10 @@ func net_grab_denied() -> void:
 
 func _throw() -> void:
 	var cam := _holder
+	if cam == null or not is_instance_valid(cam):
+		_release()
+		return
+	_throw_msec = Time.get_ticks_msec()
 	var pv := Vector3.ZERO
 	if _player != null and is_instance_valid(_player):
 		pv = _player.velocity
@@ -155,8 +168,16 @@ func _local_hold() -> void:
 	if d.length() > LOSE_DIST:
 		_release()
 		return
+	if _throw_pressed():
+		_throw()
+		return
 	linear_velocity = (d * HOLD_GAIN).limit_length(HOLD_MAX_SPEED)
 	angular_velocity *= 0.8
+
+# Clic gauche avec un objet en main = lancer, où que vise le viseur (souris capturée : pas de menu ouvert).
+func _throw_pressed() -> bool:
+	return Time.get_ticks_msec() - _grab_msec > 150 and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+			and Input.is_action_just_pressed("left_click", false)
 
 # CLIENT : envoie la cible de prise au serveur (20 Hz) ; le serveur déplace l'objet, la synchro nous le ramène.
 func _client_hold() -> void:
@@ -165,6 +186,9 @@ func _client_hold() -> void:
 	if not is_instance_valid(_holder) or Input.is_action_just_pressed("right_click", true):
 		_release()
 		props.call("net_send", "prop_drop", net_id)
+		return
+	if _throw_pressed():
+		_throw()
 		return
 	_hold_tick += 1
 	if _hold_tick % 3 == 0:
