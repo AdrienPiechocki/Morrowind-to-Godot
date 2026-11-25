@@ -170,6 +170,26 @@ const ALPHA_CUTOFF := 0.28
 var _fixed_mats := {}
 var _colliders_done := {}   # clé d'intérieur -> true
 
+const RUG_WORDS := ["rug", "carpet"]
+
+# Tapis : reconnus au nom du mesh, ou à la texture d'une de ses surfaces (tx_rug_*, tr_rug_*, pc_furn_rug_*…)
+# quand le nom ne le dit pas.
+func _is_rug(mi: MeshInstance3D) -> bool:
+	var low := String(mi.name).to_lower()
+	for w in RUG_WORDS:
+		if low.contains(w):
+			return true
+	for s in mi.mesh.get_surface_count():
+		var m := mi.mesh.surface_get_material(s) as BaseMaterial3D
+		var tex := m.albedo_texture if m != null else null
+		if tex == null:
+			continue
+		var path := (tex.resource_path + " " + String(tex.resource_name)).to_lower()
+		for w in RUG_WORDS:
+			if path.contains(w):
+				return true
+	return false
+
 # Matériaux opaques et alpha scissor en DOUBLE FACE (les alpha BLEND restent simple face).
 # Entre les faces des meshes (jonctions en T de la géométrie d'origine), de fines fissures laissent voir ce qui est
 # derrière — la skybox — sous forme de traits clairs. En double face, le regard tombe sur l'envers des faces voisines
@@ -180,11 +200,17 @@ var _colliders_done := {}   # clé d'intérieur -> true
 func _fix_materials(root_n: Node) -> void:
 	for mi in root_n.find_children("*", "MeshInstance3D", true, false):
 		var mesh := (mi as MeshInstance3D).mesh
-		if mesh == null or _fixed_mats.has(mesh):
+		if mesh == null:
+			continue
+		var is_rug := _is_rug(mi as MeshInstance3D)
+		# Tapis, PARTOUT (extérieur compris, pas seulement les intérieurs) : niveau de détail maximal. Les LOD
+		# générés à l'import glTF écrasent l'éventail central des tapis ronds/ovales selon la distance (texture qui
+		# « change » quand on bouge). Réglé par instance, avant le filtre « mesh déjà traité » ci-dessous.
+		if is_rug:
+			(mi as MeshInstance3D).lod_bias = 100.0
+		if _fixed_mats.has(mesh):
 			continue
 		_fixed_mats[mesh] = true
-		var low := String(mi.name).to_lower()
-		var is_rug := low.contains("rug") or low.contains("carpet")
 		for s in mesh.get_surface_count():
 			var m := mesh.surface_get_material(s) as BaseMaterial3D
 			# Tapis : sans mipmaps. Les tapis ronds ont un mappage « mandala » (chaque secteur de l'éventail central
