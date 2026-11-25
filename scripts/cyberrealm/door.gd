@@ -23,6 +23,7 @@ var _closed_mesh := Transform3D.IDENTITY
 var _closed_body := Transform3D.IDENTITY
 var _tween: Tween = null
 var _angle := 0.0
+var _axis := Vector3.UP   # axe de la charnière (repère local) : Y pour un battant, X pour une trappe à plat
 
 func interact(player_id: int) -> void:
 	if forward != null and is_instance_valid(forward):
@@ -47,7 +48,8 @@ func _toggle() -> void:
 	if _sign == 0.0:
 		_closed_mesh = mesh.transform
 		_closed_body = transform
-		_sign = _free_side(mesh)
+		_axis = _hinge_axis(mesh)
+		_sign = _lift_side(mesh) if _axis != Vector3.UP else _free_side(mesh)
 	_open = not _open
 	var target := _sign * OPEN_ANGLE if _open else 0.0
 	if _tween != null and _tween.is_valid():
@@ -57,12 +59,12 @@ func _toggle() -> void:
 	_tween.tween_method(_set_angle.bind(mesh), from, target, OPEN_TIME * absf(target - from) / OPEN_ANGLE) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
-# Pivote le mesh ET son collider (frères, même repère) autour de l'axe Y local de la charnière.
+# Pivote le mesh ET son collider (frères, même repère) autour de l'axe local de la charnière.
 func _set_angle(a: float, mesh: Node3D) -> void:
 	if not is_instance_valid(mesh):
 		return
 	_angle = a
-	var rot := Basis(Vector3.UP, a)
+	var rot := Basis(_axis, a)
 	mesh.transform = Transform3D(_closed_mesh.basis * rot, _closed_mesh.origin)
 	transform = Transform3D(_closed_body.basis * rot, _closed_body.origin)
 
@@ -86,3 +88,22 @@ func _free_side(mesh: Node3D) -> float:
 		if space.intersect_shape(q, 1).is_empty():
 			return s
 	return 1.0
+
+# Panneau à plat (fin sur Y, ex. trappe de comptoir « bar_door ») : charnière sur son bord, axe X local.
+# Les battants verticaux gardent l'axe Y.
+func _hinge_axis(mesh: Node3D) -> Vector3:
+	var mi := mesh as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		return Vector3.UP
+	var sz := mi.mesh.get_aabb().size
+	if sz.y < sz.x and sz.y < sz.z:
+		return Vector3.RIGHT
+	return Vector3.UP
+
+# Sens qui soulève la trappe (et non qui l'enfonce dans le comptoir) ; déterministe.
+func _lift_side(mesh: Node3D) -> float:
+	var mi := mesh as MeshInstance3D
+	var c := mi.mesh.get_aabb().get_center()
+	var up_pos: float = (mesh.global_basis * (Basis(_axis, OPEN_ANGLE) * c)).y
+	var up_neg: float = (mesh.global_basis * (Basis(_axis, -OPEN_ANGLE) * c)).y
+	return 1.0 if up_pos >= up_neg else -1.0
