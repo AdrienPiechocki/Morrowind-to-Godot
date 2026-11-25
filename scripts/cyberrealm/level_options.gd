@@ -11,9 +11,10 @@ extends Node
 ## serveur, voir lan_manager.is_admin) : le client envoie sa demande au serveur (message « lvlopt_set »), qui la
 ## valide, la mémorise et la diffuse à tous (« lvlopt »). Un joueur qui arrive demande l'état courant (« lvlopt_get »).
 ##
-## Le menu pause n'a pas de point d'extension : on s'y greffe au runtime
-## (bouton ajouté à la page principale à chaque reconstruction de celle-ci).
-## Tout est retiré à la sortie de l'arbre (changement de niveau).
+## Entrée « Level » dans la sidebar du menu pause via son API add_menu_page ;
+## repli pour un menu pause plus ancien : bouton greffé à la page principale à
+## chaque reconstruction de celle-ci. Tout est retiré à la sortie de l'arbre
+## (changement de niveau).
 
 enum { LOCAL, SERVER, CLIENT }
 var _net := LOCAL
@@ -62,6 +63,9 @@ func _process(delta: float) -> void:
 			_broadcast()
 
 func _exit_tree() -> void:
+	if _pm != null and is_instance_valid(_pm) and _pm.has_method("remove_menu_page"):
+		_pm.call("remove_menu_page", "level_options")
+		return
 	if _pm != null and is_instance_valid(_pm):
 		var c := _pm.get("container") as Container
 		if c != null and c.child_order_changed.is_connected(_on_container_changed):
@@ -78,6 +82,9 @@ func _try_attach() -> void:
 	if pm == null or pm.get("container") == null:
 		return
 	_pm = pm
+	if pm.has_method("add_menu_page"):
+		pm.call("add_menu_page", "level_options", "Level", _show_page)
+		return
 	var c := pm.get("container") as Container
 	c.child_order_changed.connect(_on_container_changed)
 	_on_container_changed()

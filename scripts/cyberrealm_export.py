@@ -5,7 +5,8 @@ options de niveau dans le menu pause et multijoueur LAN.
     python3 scripts/cyberrealm_export.py [--src godot_export/morrowind] [--dest <CyberRealm>/Game/source/user]
 
 Produit dans `--dest` (le dossier `user/` du projet CyberRealm) :
-  level.tscn                    niveau (monde + joueur + 80 interieurs ranges sur une grille haute + options)
+  Levels/<Nom>/level.tscn       niveau (monde + joueur + 80 interieurs ranges sur une grille haute + options),
+                                liste dans le menu Worlds de CyberRealm sous le nom du dossier
   Levels/<Nom>/                 assets (models, textures, fx, shaders, farlands.tscn), scripts d'effets
                                 et de jeu (scripts/cyberrealm/ -> interiors.gd, door.gd, level_options.gd...),
                                 scenes d'interieur nettoyees (interiors/*.tscn)
@@ -169,8 +170,12 @@ def main():
         x, z = (i % 10) * 800.0, (i // 10) * 800.0
         s += ('\n[node name="%s" parent="Interiors" instance=ExtResource("int%d")]\n'
               'transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, %s, 6000, %s)\n') % (n.replace(".", "_"), i, x, z)
-    wr(USER / "level.tscn", s)
-    print(f"[OK] CyberRealm : {len(names)} interieurs -> {USER / 'level.tscn'} ; assets -> {HERE}")
+    wr(HERE / "level.tscn", s)
+    # Ancien emplacement (avant le menu Worlds) : le retirer, sinon le niveau apparaitrait deux fois.
+    old = USER / "level.tscn"
+    if old.exists() and "res://user/Levels/%s/" % args.name in rd(old):
+        old.unlink()
+    print(f"[OK] CyberRealm : {len(names)} interieurs -> {HERE / 'level.tscn'} ; assets -> {HERE}")
     print("     Relancer l'import : godot --headless --import --path <CyberRealm>/Game/source")
     return 0
 
