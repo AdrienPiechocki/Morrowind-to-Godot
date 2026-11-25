@@ -37,8 +37,8 @@ const SWAY_RADIUS := 40.0                 # m : balancement actif autour de la c
 const LIGHT_RANGE := 7.0
 const LIGHT_ENERGY := 0.7
 const LIGHT_COLOR := Color(1.0, 0.68, 0.38)
-const FADE_BEGIN := 22.0                  # m : la lumière s'éteint progressivement (perf iGPU)
-const FADE_LENGTH := 10.0
+const FADE_BEGIN := 70.0                  # m : la lumière s'éteint progressivement (perf iGPU)
+const FADE_LENGTH := 30.0
 const INDOOR_MIN_Y := 3000.0
 
 var _lights: Array = []        # {light, base, outdoor}
