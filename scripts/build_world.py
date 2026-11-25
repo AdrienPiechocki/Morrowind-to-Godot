@@ -273,7 +273,9 @@ def main():
             if (parent_name or "").lower() != dcell and not (parent_name is None and dcell not in int_cells):
                 continue
             t = np.asarray(dest["translation"], dtype=np.float64)
-            dist = float(np.linalg.norm(t[:2] - pos[:2]))
+            # Distance 3D : des portes superposees (tour de garde : porte basse et porte haute a 2 m l'une de
+            # l'autre a l'horizontale, 7 m en hauteur) prenaient toutes le meme point de retour en XY seul.
+            dist = float(np.linalg.norm(t - pos))
             if best_d is None or dist < best_d:
                 best, best_d = (t, dest.get("rotation") or [0, 0, 0]), dist
         return best
