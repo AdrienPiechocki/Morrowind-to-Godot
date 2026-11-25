@@ -26,7 +26,11 @@ const NOT_PHYS_WORDS := ["-colonly", "plant", "flora", "grass", "tree_", "_tree"
 	"wall", "floor", "flr", "door", "stair", "ceil", "beam", "arch_", "archway", "pillar", "column", "bridge",
 	"rock", "boulder", "rug", "rope", "banner", "curtain", "tapestry", "web", "waterfall", "watersurface", "fire_",
 	"fireplace", "smoke", "steam", "lantern", "lamp", "torch", "signpost", "signbase", "active_sign", "post",
-	"rack", "hook", "coals", "practice_mat"]
+	"rack", "hook", "coals", "practice_mat",
+	"var_blood", "decal"]                     # flaques de sang (t_glb_var_blood_*), décalques muraux : peints au sol/mur
+# Étagères : leur collider d'origine (« -colonly ») est une boîte pleine qui englobe les rayons. Les objets posés
+# dessus étaient enfermés dedans (rayon de visée bloqué, corps éjectés au réveil) : il est remplacé par le mesh visible.
+const SHELF_WORDS := ["shelf"]
 const ITEM_PREFIXES := ["ingred_", "bk_", "p_", "sc_", "misc_"]    # objets ramassables : priment sur les mots exclus
 const NOT_PHYS_PREFIXES := ["in_", "ex_"]                          # modules d'architecture Morrowind
 # Caisses, urnes : statiques, avec collision en boîte (noms exacts relevés dans l'export Morrowind).
@@ -83,12 +87,45 @@ static func _starts_with_any(s: String, prefixes: Array) -> bool:
 	return false
 
 func _has_collider(mi: MeshInstance3D) -> bool:
+	return _collider_of(mi) != null
+
+# Collider importé d'un mesh (le « -colonly » de l'import glTF, frère juste après, même origine).
+func _collider_of(mi: MeshInstance3D) -> StaticBody3D:
 	var par := mi.get_parent()
 	for i in range(mi.get_index() + 1, mini(mi.get_index() + 3, par.get_child_count())):
 		var sb := par.get_child(i) as StaticBody3D
 		if sb != null and sb.global_position.distance_to(mi.global_position) < 0.05:
-			return true
-	return false
+			return sb
+	return null
+
+# Remplace la boîte pleine d'une étagère par la géométrie du mesh visible (planches, montants) : les rayons de
+# visée passent entre les planches jusqu'aux objets, qui reposent sur les planches. Idempotent (rejoué sur un
+# niveau déjà traité, ex. reçu en LAN, il reconstruit la même forme).
+func _fit_shelf_collider(mi: MeshInstance3D) -> void:
+	var sb := _collider_of(mi)
+	if sb == null:
+		return
+	var faces := mi.mesh.get_faces()
+	if faces.is_empty():
+		return
+	var xf := sb.global_transform.affine_inverse() * mi.global_transform
+	for i in faces.size():
+		faces[i] = xf * faces[i]
+	var shape := ConcavePolygonShape3D.new()
+	shape.backface_collision = true        # planches souvent simple face
+	shape.set_faces(faces)
+	var done := false
+	for c in sb.get_children():
+		var cs := c as CollisionShape3D
+		if cs == null:
+			continue
+		if not done:
+			cs.shape = shape
+			cs.transform = Transform3D.IDENTITY
+			cs.disabled = false
+			done = true
+		else:
+			cs.disabled = true
 
 func _setup_net() -> void:
 	_lan = get_node_or_null("/root/WaylandRoom/LAN")
@@ -110,6 +147,9 @@ func _process_mesh(mi: MeshInstance3D) -> void:
 	_mi_seen[mi] = true
 	var low := String(mi.name).to_lower()
 	if _has_word(low, NO_GLOW_NAMES):
+		return
+	if _has_word(low, SHELF_WORDS) and low.contains("furn"):    # (pas « flora_bc_shelffungus »)
+		_fit_shelf_collider(mi)
 		return
 	if _has_word(low, GLOW_WORDS) and not low.contains("-colonly"):
 		if _net != NET_SERVER:       # (un serveur n'a ni lumière ni balancement : pas de rendu)

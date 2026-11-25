@@ -75,6 +75,7 @@ func _ready() -> void:
 	var ext_model := level.get_node_or_null("ExteriorRoot/Exterior")
 	if ext_model != null:
 		_fix_materials(ext_model)
+		_fix_flora(ext_model)
 	for key in _interiors:
 		var it: Node3D = _interiors[key]
 		it.process_mode = Node.PROCESS_MODE_INHERIT
@@ -127,6 +128,30 @@ func _prepare_interior(key: String, it: Node3D) -> void:
 			(vi as GeometryInstance3D).lod_bias = 100.0
 	_fix_materials(it)
 	_fix_floor_colliders(it)
+
+# Flore extérieure : elle disparaissait au loin, pour les deux mêmes raisons que dans les intérieurs.
+#  - occlusion culling : le tampon d'occlusion est basse résolution ; au loin, le pixel d'une plante posée sur le
+#    terrain contient aussi le terrain devant elle (occludeur), la plante est jugée cachée ;
+#  - LOD générés à l'import (generate_lods) : la simplification réduit à rien les quelques quads d'un feuillage.
+# Les feuillages (nom de flore ou surface alpha scissor) ignorent donc l'occlusion et gardent leur mesh complet.
+const FLORA_WORDS := ["flora", "tree_", "_tree", "grass", "bush", "shrub", "plant", "fern", "kelp", "weed", "reed", "leaf",
+	"leaves", "vine", "mushroom", "shroom", "fungus", "lichen"]
+
+func _fix_flora(root_n: Node) -> void:
+	for mi in root_n.find_children("*", "MeshInstance3D", true, false):
+		var g := mi as MeshInstance3D
+		if g.mesh == null:
+			continue
+		if _has_word(String(g.name).to_lower(), FLORA_WORDS) or _has_scissor(g):
+			g.ignore_occlusion_culling = true
+			g.lod_bias = 100.0
+
+static func _has_scissor(mi: MeshInstance3D) -> bool:
+	for s in mi.mesh.get_surface_count():
+		var m := mi.get_active_material(s) as BaseMaterial3D
+		if m != null and m.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR:
+			return true
+	return false
 
 # ── Corrections de géométrie (export Morrowind) ─────────────────────
 
@@ -271,6 +296,8 @@ const ENTER_SEARCH_RADIUS := 0.5          # le mesh d'une porte est à l'origine
 const DOOR_WORDS := ["door"]              # noms prioritaires pour les sorties
 const EXIT_WORDS := ["grate", "hatch", "gate", "exit", "trap", "entrance"]
 const NOT_DOORS := ["jamb", "frame", "doorway", "arch", "indoor", "outdoor"]   # décor autour de la porte, pas la porte
+# Objets ramassables dont le nom contient « door » (livre « bk_doorsofthespirit »…) : jamais des portes.
+const NOT_DOOR_PREFIXES := ["bk_", "t_bk_", "bookskill", "sc_", "t_sc_", "misc_", "t_misc_", "ingred_", "t_ingred_"]
 
 var _body_mesh := {}      # collider de porte -> son MeshInstance3D
 var _cands := {}          # clé de portée -> Array de {mesh, body, claimed}
@@ -379,7 +406,8 @@ func _candidates(scope: String) -> Array:
 	if root_n != null:
 		for mi in root_n.find_children("*", "MeshInstance3D", true, false):
 			var nm := String(mi.name).to_lower()
-			if (_has_word(nm, DOOR_WORDS) or _has_word(nm, EXIT_WORDS)) and not _has_word(nm, NOT_DOORS):
+			if (_has_word(nm, DOOR_WORDS) or _has_word(nm, EXIT_WORDS)) and not _has_word(nm, NOT_DOORS) \
+					and not _starts_with_any(nm, NOT_DOOR_PREFIXES):
 				out.append({"mesh": mi, "body": null, "claimed": false, "kind": ""})
 	_cands[scope] = out
 	return out
@@ -387,6 +415,12 @@ func _candidates(scope: String) -> Array:
 static func _has_word(s: String, words: Array) -> bool:
 	for w in words:
 		if s.contains(w):
+			return true
+	return false
+
+static func _starts_with_any(s: String, prefixes: Array) -> bool:
+	for p in prefixes:
+		if s.begins_with(p):
 			return true
 	return false
 
@@ -546,7 +580,7 @@ func _travel(d: Dictionary) -> void:
 	var pos: Vector3
 	var yaw: float
 	if d["kind"] == "enter":
-		pos = (_interiors[dest] as Node3D).to_global(d["pos"] as Vector3) + Vector3.UP * FEET_TO_ORIGIN
+		pos = _on_ground((_interiors[dest] as Node3D).to_global(d["pos"] as Vector3))
 		yaw = float(d["yaw"])
 		_entered[dest] = {"target": String(d["scope"]), "marker": d["marker"]}
 	else:
@@ -800,6 +834,19 @@ func _interior_floor_y() -> float:
 
 # ── Point de sortie devant une porte ─────────────────────────────────
 
+const GROUND_UP := 0.8      # m : départ du rayon de sol au-dessus du point (marche, seuil légèrement plus haut)
+const GROUND_DOWN := 6.0    # m : profondeur de recherche du sol
+
+## Point d'arrivée posé au sol. Les positions d'arrivée de Morrowind flottent souvent au-dessus du plancher (le jeu
+## laisse tomber le joueur) : sans ce recalage on arrivait trop haut. Sans sol trouvé : position telle quelle.
+func _on_ground(p: Vector3) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	var rq := PhysicsRayQueryParameters3D.create(p + Vector3.UP * GROUND_UP, p + Vector3.DOWN * GROUND_DOWN, 1)
+	var hit := space.intersect_ray(rq)
+	if hit.is_empty() or (hit.normal as Vector3).y <= 0.5:
+		return p + Vector3.UP * FEET_TO_ORIGIN
+	return (hit.position as Vector3) + Vector3.UP * FEET_TO_ORIGIN
+
 ## Point d'arrivée devant une porte : le marqueur lui-même (position + orientation
 ## vers l'extérieur de la porte), posé au sol. Si le marqueur est dans un mur ou
 ## sans sol, on retombe sur la recherche autour de la porte.
@@ -807,9 +854,9 @@ func _marker_spot(marker: Node3D) -> Dictionary:
 	var space := get_world_3d().direct_space_state
 	var p := marker.global_position
 	var yaw := marker.global_transform.basis.get_euler().y
-	var rq := PhysicsRayQueryParameters3D.create(p + Vector3.UP * 1.2, p + Vector3.DOWN * 3.0, 1)
+	var rq := PhysicsRayQueryParameters3D.create(p + Vector3.UP * GROUND_UP, p + Vector3.DOWN * GROUND_DOWN, 1)
 	var hit := space.intersect_ray(rq)
-	if not hit.is_empty():
+	if not hit.is_empty() and (hit.normal as Vector3).y > 0.5:
 		var feet: Vector3 = hit.position
 		var sq := PhysicsShapeQueryParameters3D.new()
 		sq.shape = CapsuleShape3D.new()
