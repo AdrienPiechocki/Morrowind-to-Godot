@@ -217,7 +217,7 @@ void fragment() {
 	float haze = 1.0 - exp(-dist * haze_density);
 	// perspective atmospherique : le panache est voile comme la montagne (sinon il parait au premier plan)
 	haze = max(haze, haze_floor);
-	vec3 aerial = mix(fog_color, aerial_tint * (0.06 + 0.94 * day_light), 0.5);
+	vec3 aerial = mix(fog_color, aerial_tint * (0.03 + 0.97 * day_light), 0.5);
 	col = mix(col, aerial * alpha, haze * 0.95);
 	ALBEDO = col * fade;
 	ALPHA = alpha * fade;

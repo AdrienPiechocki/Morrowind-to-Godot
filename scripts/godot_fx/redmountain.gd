@@ -25,6 +25,12 @@ const MW_TO_M := 0.01
 @export var fade_start_m := 1500.0   # le volcan devient transparent a partir de cette distance...
 @export var fade_end_m := 7000.0     # ...et disparait ici
 @export var daynight: Node
+# Obscurité au crépuscule / la nuit : la lumière (0 nuit .. 1 jour) suit une courbe (> 1 = s'assombrit plus tôt
+# au coucher), la montagne garde night_level de sa clarté la nuit, et la brume qui la voile s'assombrit jusqu'à
+# dusk_veil (sinon l'horizon orangé du crépuscule l'éclaircissait).
+@export_range(1.0, 4.0) var light_curve := 2.0
+@export_range(0.0, 1.0) var night_level := 0.06
+@export_range(0.0, 1.0) var dusk_veil := 0.45
 # Ressources fournies par la scène (exports) : un load() à chemin construit
 # n'est pas transmis en LAN, les exports le sont.
 @export var plume_shader: Shader
@@ -155,19 +161,22 @@ func _process(_delta: float) -> void:
 		sun_col = _sun.light_color
 	if _env:
 		fog_col = _env.fog_light_color
-	var light := clampf(factor + 0.12, 0.0, 1.0)
+	var light := pow(clampf(factor, 0.0, 1.0), light_curve)
+	var veil := lerpf(dusk_veil, 1.0, light)
+	var fog_v := Vector3(fog_col.r, fog_col.g, fog_col.b) * veil
 	if _plume_mat:
 		_plume_mat.set_shader_parameter("day_light", light)
 		_plume_mat.set_shader_parameter("fade_start", fade_start_m)
 		_plume_mat.set_shader_parameter("fade_end", fade_end_m)
 		_plume_mat.set_shader_parameter("sun_dir", sun_dir)
 		_plume_mat.set_shader_parameter("sun_color", Vector3(sun_col.r, sun_col.g, sun_col.b) * factor)
-		_plume_mat.set_shader_parameter("ambient_color", Vector3(fog_col.r, fog_col.g, fog_col.b) * (0.25 + 0.75 * factor))
-		_plume_mat.set_shader_parameter("fog_color", Vector3(fog_col.r, fog_col.g, fog_col.b))
+		_plume_mat.set_shader_parameter("ambient_color", fog_v * (0.15 + 0.85 * light))
+		_plume_mat.set_shader_parameter("fog_color", fog_v)
 		_plume_mat.set_shader_parameter("haze_density", haze)
 	if _mountain_mat:
 		_mountain_mat.set_shader_parameter("fade_start", fade_start_m)
 		_mountain_mat.set_shader_parameter("fade_end", fade_end_m)
 		_mountain_mat.set_shader_parameter("light", light)
-		_mountain_mat.set_shader_parameter("fog_color", Vector3(fog_col.r, fog_col.g, fog_col.b) * 0.95)
+		_mountain_mat.set_shader_parameter("night_level", night_level)
+		_mountain_mat.set_shader_parameter("fog_color", fog_v * 0.95)
 		_mountain_mat.set_shader_parameter("haze_density", maxf(haze, _env.fog_density if _env else 0.0))
