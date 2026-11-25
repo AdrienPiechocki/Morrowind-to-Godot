@@ -45,8 +45,6 @@ var _lights: Array = []        # {light, base, outdoor}
 var _sway: Array = []          # {mi, base, pivot, gpos, amp, freq, phase}
 var _statics: Array = []       # {mi, gpos, body}
 var _bodies: Array = []        # {mi, gpos, home, body (null si non instancié), woken}
-var _glow_mats := {}           # (matériau source, extérieur) -> copie émissive partagée
-var _glow_list: Array = []     # {mat, outdoor}
 var _t := 0.0
 var _acc := 0.0
 var _sun: Light3D
@@ -108,6 +106,8 @@ func _add_glow(mi: MeshInstance3D, low: String) -> void:
 	light.light_energy = LIGHT_ENERGY
 	light.omni_range = LIGHT_RANGE * (1.4 if low.contains("lightpost") else 1.0)
 	light.shadow_enabled = false
+	light.light_size = 1.0               # rayon de la source (ombres/spéculaire plus doux)
+	light.omni_attenuation = 0.5
 	light.distance_fade_enabled = true
 	light.distance_fade_begin = FADE_BEGIN
 	light.distance_fade_length = FADE_LENGTH
@@ -116,40 +116,13 @@ func _add_glow(mi: MeshInstance3D, low: String) -> void:
 	mi.set_meta("lan_skip_children", true)
 	mi.add_child(light)
 	var outdoor := mi.global_position.y < INDOOR_MIN_Y
-	_make_glow(mi, outdoor)
 	_lights.append({"light": light, "base": LIGHT_ENERGY, "outdoor": outdoor})
-
-# La lanterne elle-même s'illumine : copie des matériaux du mesh avec émission = sa propre texture (les
-# émissions d'origine sont à 0 dans l'export). Une copie par matériau source, partagée entre les instances.
-func _make_glow(mi: MeshInstance3D, outdoor: bool) -> void:
-	for i in mi.mesh.get_surface_count():
-		if mi.get_surface_override_material(i) != null:
-			continue                                  # déjà traité (niveau reçu en LAN, déjà baké)
-		var src := mi.mesh.surface_get_material(i) as StandardMaterial3D
-		if src == null:
-			continue
-		var key := [src, outdoor]
-		if not _glow_mats.has(key):
-			var m := src.duplicate() as StandardMaterial3D
-			m.emission_enabled = true
-			m.emission = Color(1.0, 0.62, 0.3)
-			m.emission_energy_multiplier = 0.05
-			if m.albedo_texture != null:
-				m.emission_texture = m.albedo_texture
-				m.emission = Color(1.0, 0.8, 0.55)
-			m.emission_operator = BaseMaterial3D.EMISSION_OP_ADD
-			_glow_mats[key] = m
-			_glow_list.append({"mat": m, "outdoor": outdoor})
-		mi.set_surface_override_material(i, _glow_mats[key])
 
 # Extérieur : allumées quand le soleil/la lune est faible. Appelé quelques fois par seconde.
 func _update_lights() -> void:
 	var dark := 1.0
 	if _sun != null:
 		dark = 1.0 - smoothstep(0.1, 0.9, _sun.light_energy)
-	for g in _glow_list:
-		if g.outdoor:
-			(g.mat as StandardMaterial3D).emission_energy_multiplier = lerpf(0.005, 0.05, dark)
 	for d in _lights:
 		var l := d.light as OmniLight3D
 		if not is_instance_valid(l):
