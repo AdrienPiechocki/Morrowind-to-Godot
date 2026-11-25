@@ -51,6 +51,9 @@ var _weather: Node3D = null
 func _ready() -> void:
 	set_meta("lan_skip_children", true)
 	var level := get_parent()
+	if _is_dedicated_server():
+		_server_ready(level)
+		return
 	_weather = level.get_node_or_null("Weather") as Node3D
 	var sun := level.get_node_or_null("Sun") as Light3D
 	if sun != null:
@@ -85,6 +88,25 @@ func _ready() -> void:
 		_deactivate(key)
 	if _weather != null:
 		_weather.visible = true
+
+# Serveur dédié (headless, sans joueur ni rendu) : seul ce nœud garde son script (méta « net_server »). Il ne fait
+# que préparer la physique du décor : les intérieurs restent ACTIFS (leurs colliders existent) et props.gd tourne en
+# mode serveur — autorité sur les objets que les clients touchent, prennent ou lancent.
+func _is_dedicated_server() -> bool:
+	var lan := get_node_or_null("/root/WaylandRoom/LAN")
+	return lan != null and lan.get("dedicated") == true
+
+func _server_ready(level: Node) -> void:
+	set_process(false)
+	for c in get_children():
+		if c is Node3D:
+			_interiors[_key(String(c.name))] = c
+			c.process_mode = Node.PROCESS_MODE_INHERIT
+	var props := PropsScript.new()
+	props.name = "Props"
+	add_child(props)
+	props.setup([level.get_node_or_null("ExteriorRoot/Exterior")] + _interiors.values())
+	print("[server] décor physique prêt : %d intérieurs" % _interiors.size())
 
 func _exit_tree() -> void:
 	# Niveau remplacé (jonction LAN, retour au niveau local) : ne pas laisser

@@ -4,6 +4,10 @@ extends Node
 ##   - lanternes suspendues : léger balancement (pendule autour du point d'accroche) ;
 ##   - petits objets sans collision (bouteilles, bols, livres…) : RigidBody3D que le joueur peut pousser.
 ## Les objets physiques se prennent / lancent / cassent (prop_body.gd).
+## Sur un SERVEUR DÉDIÉ la physique des objets est simulée par le serveur (autorité) : les clients envoient des
+## demandes (messages de niveau « prop_* »), le serveur diffuse les transformations (synchro de niveau du lan_manager,
+## via la méta « lan_sync_dynamic » des meshes) et les casses. L'identifiant d'un objet est son indice dans _bodies,
+## identique partout puisque serveur et clients parcourent le même niveau (même blob) dans le même ordre.
 ## Les nœuds créés n'ont pas d'owner et leur parent porte « lan_skip_children » : le LevelBaker les ignore,
 ## chaque machine les reconstruit au chargement (comme les portes). CYBERREALM_NO_PROPS=1 désactive tout.
 
@@ -41,6 +45,10 @@ const FADE_BEGIN := 70.0                  # m : la lumière s'éteint progressiv
 const FADE_LENGTH := 30.0
 const INDOOR_MIN_Y := 3000.0
 
+enum { NET_LOCAL, NET_SERVER, NET_CLIENT }
+var _net := NET_LOCAL
+var _lan: Node = null
+
 var _lights: Array = []        # {light, base, outdoor}
 var _sway: Array = []          # {mi, base, pivot, gpos, amp, freq, phase}
 var _statics: Array = []       # {mi, gpos, body}
@@ -53,7 +61,9 @@ var _mi_seen := {}
 func setup(roots: Array) -> void:
 	if OS.get_environment("CYBERREALM_NO_PROPS") == "1":
 		return
-	_sun = get_parent().get_parent().get_node_or_null("Sun") as Light3D
+	_setup_net()
+	var level := get_parent().get_parent()
+	_sun = level.get_node_or_null("Sun") as Light3D if level != null else null
 	for r in roots:
 		if r == null:
 			continue
@@ -80,6 +90,20 @@ func _has_collider(mi: MeshInstance3D) -> bool:
 			return true
 	return false
 
+func _setup_net() -> void:
+	_lan = get_node_or_null("/root/WaylandRoom/LAN")
+	if _lan == null or OS.get_environment("CYBERREALM_LOCAL_PROPS") == "1":
+		return
+	if _lan.get("dedicated") == true:
+		_net = NET_SERVER
+	elif _lan.get("session_dedicated") == true:
+		_net = NET_CLIENT
+	if _net == NET_LOCAL:
+		return
+	_lan.level_message.connect(_on_level_message)
+	if _net == NET_SERVER:
+		_lan.level_peer_left.connect(_on_peer_left)
+
 func _process_mesh(mi: MeshInstance3D) -> void:
 	if mi.mesh == null or _mi_seen.has(mi):
 		return
@@ -88,9 +112,10 @@ func _process_mesh(mi: MeshInstance3D) -> void:
 	if _has_word(low, NO_GLOW_NAMES):
 		return
 	if _has_word(low, GLOW_WORDS) and not low.contains("-colonly"):
-		_add_glow(mi, low)
-		if _has_word(low, SWAY_WORDS):
-			_add_sway(mi, low)
+		if _net != NET_SERVER:       # (un serveur n'a ni lumière ni balancement : pas de rendu)
+			_add_glow(mi, low)
+			if _has_word(low, SWAY_WORDS):
+				_add_sway(mi, low)
 	elif (_has_word(low, STATIC_BOX_WORDS) or low.begins_with("urn")) and not low.contains("-colonly"):
 		_add_static_box(mi)
 	elif (_starts_with_any(low, ITEM_PREFIXES) or not _has_word(low, NOT_PHYS_WORDS)) \
@@ -174,7 +199,10 @@ func _add_rigid(mi: MeshInstance3D) -> void:
 	if ext < PHYS_MIN_SIZE or ext > PHYS_MAX_SIZE or _has_collider(mi) \
 			or (ext > 0.6 and String(mi.name).to_lower().contains("furn_")):     # meubles : pas des objets
 		return
-	_bodies.append({"mi": mi, "gpos": mi.global_position, "home": mi.global_transform, "body": null, "woken": false})
+	_bodies.append({"mi": mi, "gpos": mi.global_position, "home": mi.global_transform, "body": null, "woken": false,
+			"broken": false, "synced": false, "id": _bodies.size()})
+	if _net != NET_LOCAL:
+		mi.set_meta("lan_sync_dynamic", true)     # le client accepte les transformations du serveur pour ce mesh
 
 # Collision statique en boîte englobante (caisses, urnes sans collider d'origine). Créée à la demande autour de la
 # caméra (limite de corps de Jolt : il y en a des milliers dans le niveau).
@@ -201,21 +229,31 @@ func _make_static(d: Dictionary) -> void:
 	sb.global_transform = Transform3D(mi.global_transform.basis.orthonormalized(), mi.global_position)
 	d.body = sb
 
-func _update_statics(cp: Vector3) -> void:
-	var near2 := STATIC_NEAR * STATIC_NEAR
-	var far2 := STATIC_FAR * STATIC_FAR
+func _update_statics(centers: Array, near := STATIC_NEAR, far := STATIC_FAR) -> void:
+	var near2 := near * near
+	var far2 := far * far
 	for d in _statics:
 		var sb = d.body
 		if sb != null and not is_instance_valid(sb):
 			d.body = null
 			sb = null
-		var d2 := (d.gpos as Vector3).distance_squared_to(cp)
+		var d2 := _min_dist2(d.gpos, centers)
 		if sb == null:
-			if d2 < near2 and is_instance_valid(d.mi) and (d.mi as MeshInstance3D).is_visible_in_tree():
+			if d2 < near2 and is_instance_valid(d.mi) and _usable(d.mi):
 				_make_static(d)
 		elif d2 > far2:
 			sb.queue_free()
 			d.body = null
+
+static func _min_dist2(p: Vector3, centers: Array) -> float:
+	var m := INF
+	for c in centers:
+		m = minf(m, p.distance_squared_to(c))
+	return m
+
+# Un serveur ignore la visibilité (les intérieurs y sont cachés mais bien simulés).
+func _usable(mi: MeshInstance3D) -> bool:
+	return _net == NET_SERVER or mi.is_visible_in_tree()
 
 func _make_body(d: Dictionary) -> void:
 	var mi := d.mi as MeshInstance3D
@@ -227,12 +265,15 @@ func _make_body(d: Dictionary) -> void:
 	var body := RigidBody3D.new()
 	body.set_script(PropBodyScript)
 	body.set("mesh_node", mi)
+	body.set("net_mode", int(_net))      # NET_LOCAL/SERVER/CLIENT = LOCAL/SERVER/CLIENT de prop_body.gd
+	body.set("net_id", d.id)
+	body.set("props", self)
 	body.name = "PropBody"
 	body.mass = clampf(size.x * size.y * size.z * 600.0, 0.1, 4.0)
 	body.collision_layer = PROP_LAYER            # couche à part : le joueur ne subit jamais leur mouvement (player.gd)
 	body.collision_mask = 1 | PROP_LAYER
 	body.freeze = true
-	body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+	body.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC if _net == NET_CLIENT else RigidBody3D.FREEZE_MODE_STATIC
 	body.linear_damp = 0.4
 	body.angular_damp = 1.5
 	var cs := CollisionShape3D.new()
@@ -243,22 +284,34 @@ func _make_body(d: Dictionary) -> void:
 	par.set_meta("lan_skip_children", true)
 	par.add_child(body)
 	body.global_transform = Transform3D(mi.global_transform.basis.orthonormalized(), mi.global_position)
-	# Le mesh d'origine reste en place dans l'arbre (donc baké normalement) et suit le corps.
-	var rt := RemoteTransform3D.new()
-	rt.update_scale = false
-	body.add_child(rt)
-	rt.remote_path = rt.get_path_to(mi)
+	# Le mesh d'origine reste en place dans l'arbre (donc baké normalement) et suit le corps. Sauf CLIENT : c'est la
+	# synchro du serveur qui déplace le mesh, et le corps (cinématique) le suit.
+	if _net != NET_CLIENT:
+		var rt := RemoteTransform3D.new()
+		rt.update_scale = false
+		body.add_child(rt)
+		rt.remote_path = rt.get_path_to(mi)
 	d.body = body
 
 func _update_bodies() -> void:
-	var cam := get_viewport().get_camera_3d()
-	if cam == null:
-		return
-	var cp := cam.global_position
-	_update_statics(cp)
-	var near2 := BODY_NEAR * BODY_NEAR
-	var far2 := BODY_FAR * BODY_FAR
+	# Centres d'intérêt : la caméra du joueur ; sur un serveur, les objets en mouvement (personne n'y « regarde »).
+	var centers: Array = []
+	if _net == NET_SERVER:
+		for d in _bodies:
+			if d.body != null and is_instance_valid(d.body) and not (d.body as RigidBody3D).freeze:
+				centers.append((d.body as RigidBody3D).global_position)
+		_update_statics(centers, 8.0, 14.0)
+	else:
+		var cam := get_viewport().get_camera_3d()
+		if cam == null:
+			return
+		centers = [cam.global_position]
+		_update_statics(centers)
+	var near2 := (3.0 if _net == NET_SERVER else BODY_NEAR) * (3.0 if _net == NET_SERVER else BODY_NEAR)
+	var far2 := (6.0 if _net == NET_SERVER else BODY_FAR) * (6.0 if _net == NET_SERVER else BODY_FAR)
 	for d in _bodies:
+		if d.broken:
+			continue
 		var body = d.body
 		if body != null and not is_instance_valid(body):
 			d.body = null
@@ -267,24 +320,157 @@ func _update_bodies() -> void:
 			var rb := body as RigidBody3D
 			if not rb.freeze:
 				d.woken = true                       # touché / pris : il reste, indépendant de la distance
+				if _net == NET_SERVER:
+					_srv_sync_state(d, rb)
 				if rb.global_position.y < (d.home as Transform3D).origin.y - 15.0:    # traversé le décor
 					rb.freeze = true
 					rb.global_transform = d.home
 					d.woken = false
-			elif not d.woken and (d.gpos as Vector3).distance_squared_to(cp) > far2:
+					_srv_unsync(d)
+			elif not d.woken and _min_dist2(d.gpos, centers) > far2:
 				(d.mi as MeshInstance3D).global_transform = d.home
 				rb.queue_free()
 				d.body = null
-		elif not d.woken and (d.gpos as Vector3).distance_squared_to(cp) < near2 \
-				and is_instance_valid(d.mi) and (d.mi as MeshInstance3D).is_visible_in_tree():
+		elif not d.woken and _min_dist2(d.gpos, centers) < near2 \
+				and is_instance_valid(d.mi) and _usable(d.mi):
 			_make_body(d)
+
+# ── Réseau : serveur ─────────────────────────────────────────────────
+
+func _cand(id: Variant) -> Dictionary:
+	if not (id is int) or id < 0 or id >= _bodies.size():
+		return {}
+	return _bodies[id]
+
+# Appelé par un corps qui vient d'être réveillé : son mesh entre dans la synchro de transformations.
+func srv_awake(body: RigidBody3D) -> void:
+	var d := _cand(int(body.get("net_id")))
+	if d.is_empty() or _lan == null:
+		return
+	d.synced = true
+	_lan.register_level_sync(d.mi)
+
+func _srv_unsync(d: Dictionary) -> void:
+	if d.synced and _lan != null and is_instance_valid(d.mi):
+		_lan.unregister_level_sync(d.mi)
+	d.synced = false
+
+# Un corps qui s'est endormi (et que personne ne tient) sort de la synchro ; réveillé, il y rentre.
+func _srv_sync_state(d: Dictionary, rb: RigidBody3D) -> void:
+	var held: bool = int(rb.get("_holder_peer")) != 0
+	if rb.sleeping and not held:
+		_srv_unsync(d)
+	elif not d.synced:
+		d.synced = true
+		_lan.register_level_sync(d.mi)
+
+# Casse décidée par le serveur : le mesh est caché, les clients jouent les éclats, le corps est libéré.
+func srv_break(id: int, vel: Vector3) -> void:
+	var d := _cand(id)
+	if d.is_empty():
+		return
+	d.broken = true
+	_srv_unsync(d)
+	(d.mi as MeshInstance3D).visible = false
+	if is_instance_valid(d.body):
+		(d.body as Node).queue_free()
+	d.body = null
+	if _lan != null:
+		_lan.broadcast_level_message("prop_break", [id, vel, (d.mi as MeshInstance3D).global_position])
+
+func _srv_body_for(id: int) -> RigidBody3D:
+	var d := _cand(id)
+	if d.is_empty() or d.broken or not is_instance_valid(d.mi):
+		return null
+	if d.body == null or not is_instance_valid(d.body):
+		# Collisions statiques voisines (caisses, urnes…) d'abord, pour que l'objet ne tombe pas à travers.
+		_update_statics([d.gpos], 8.0, 14.0)
+		_make_body(d)
+	return d.body as RigidBody3D
+
+func _on_level_message(topic: String, data: Variant, from: int) -> void:
+	if _net == NET_SERVER:
+		_srv_message(topic, data, from)
+	elif _net == NET_CLIENT:
+		_cl_message(topic, data)
+
+func _srv_message(topic: String, data: Variant, from: int) -> void:
+	if not (data is Array or data is int):
+		return
+	match topic:
+		"prop_touch":      # [id, impulse]
+			if data is Array and data.size() == 2 and data[1] is Vector3:
+				var b := _srv_body_for(int(data[0]))
+				if b != null:
+					b.call("server_touch", data[1])
+		"prop_grab":       # id
+			var b := _srv_body_for(int(data))
+			if b == null or not bool(b.call("server_grab", from)):
+				_lan.send_level_message_to(from, "prop_grab_denied", int(data))
+		"prop_hold":       # [id, target]
+			if data is Array and data.size() == 2 and data[1] is Vector3:
+				var d := _cand(int(data[0]))
+				if not d.is_empty() and is_instance_valid(d.body):
+					d.body.call("server_hold", from, data[1])
+		"prop_throw":      # [id, vel, ang]
+			if data is Array and data.size() == 3 and data[1] is Vector3 and data[2] is Vector3:
+				var d := _cand(int(data[0]))
+				if not d.is_empty() and is_instance_valid(d.body):
+					d.body.call("server_throw", from, data[1], data[2])
+		"prop_drop":       # id
+			var d := _cand(int(data))
+			if not d.is_empty() and is_instance_valid(d.body):
+				d.body.call("server_release", from)
+
+func _on_peer_left(peer: int) -> void:
+	for d in _bodies:
+		if d.body != null and is_instance_valid(d.body):
+			d.body.call("server_release", peer)
+
+# ── Réseau : client ──────────────────────────────────────────────────
+
+## Demande au serveur (client d'une session dédiée).
+func net_send(topic: String, data: Variant = null, reliable := true) -> void:
+	if _lan != null and _net == NET_CLIENT:
+		_lan.send_level_message(topic, data, reliable)
+
+func _cl_message(topic: String, data: Variant) -> void:
+	match topic:
+		"prop_break":      # [id, vel, position]
+			if data is Array and data.size() == 3:
+				var d := _cand(int(data[0]))
+				if d.is_empty() or d.broken:
+					return
+				d.broken = true
+				var mi := d.mi as MeshInstance3D
+				PropBodyScript.spawn_shards(mi.get_parent(), mi, data[2], data[1])
+				if is_instance_valid(d.body):
+					(d.body as Node).queue_free()
+				d.body = null
+		"prop_grab_denied":
+			var d := _cand(int(data))
+			if not d.is_empty() and is_instance_valid(d.body):
+				d.body.call("net_grab_denied")
+
+# Les corps miroirs (cinématiques) suivent leur mesh, que la synchro du serveur déplace.
+func _client_follow() -> void:
+	for d in _bodies:
+		var b = d.body
+		if b == null or not is_instance_valid(b):
+			continue
+		var t := (d.mi as MeshInstance3D).global_transform
+		if not t.origin.is_equal_approx((b as Node3D).global_position):
+			(b as Node3D).global_transform = Transform3D(t.basis.orthonormalized(), t.origin)
+			d.woken = true
 
 func _process(delta: float) -> void:
 	_t += delta
-	if not _sway.is_empty():
+	if not _sway.is_empty() and _net != NET_SERVER:
 		_update_sway()
 
 func _physics_process(delta: float) -> void:
+	if _net == NET_CLIENT:
+		_client_follow()
 	_acc += delta
 	if _acc < 0.25:
 		return

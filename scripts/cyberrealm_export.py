@@ -163,7 +163,7 @@ def main():
     s += '\n[node name="LevelEnvironment" type="Node" parent="."]\nscript = ExtResource("lenv_gd")\n'
     s += "".join("%s = %s\n" % kv for kv in env_props.items())
     s += '\n[node name="LevelOptions" type="Node" parent="."]\nscript = ExtResource("lopt_gd")\n'
-    s += '\n[node name="Interiors" type="Node3D" parent="."]\nscript = ExtResource("interiors_gd")\n'
+    s += '\n[node name="Interiors" type="Node3D" parent="."]\nscript = ExtResource("interiors_gd")\nmetadata/net_server = true\n'
     s += '\n[node name="Waterfalls" type="Node" parent="."]\nscript = ExtResource("wfall_gd")\n'
     for i, n in enumerate(names):
         x, z = (i % 10) * 800.0, (i // 10) * 800.0
