@@ -50,6 +50,7 @@ var _weather: Node3D = null
 
 func _ready() -> void:
 	set_meta("lan_skip_children", true)
+	add_to_group("waypoint_scope")
 	var level := get_parent()
 	if _is_dedicated_server():
 		_server_ready(level)
@@ -552,6 +553,26 @@ func _travel(d: Dictionary) -> void:
 		var spot := _marker_spot(src["marker"] as Node3D)
 		pos = spot["pos"]
 		yaw = spot["yaw"]
+	_teleport(p, pos, yaw)
+	if from != "" and from != dest:
+		_deactivate(from)
+	_set_scope(dest)
+
+# Waypoints (scripts/main/waypoints.gd) : téléportation à une position quelconque, intérieur compris.
+# On active l'intérieur visé (colliders prêts) avant d'y poser le joueur, et on désactive l'ancien.
+func waypoint_teleport(pos: Vector3, yaw: float) -> void:
+	var p := _local_player()
+	if p == null or _busy:
+		return
+	var from := _current
+	var dest := _scope_at(pos)
+	if dest != "":
+		_activate(dest)
+		if dest != from:
+			await get_tree().physics_frame
+			await get_tree().physics_frame
+		if not is_instance_valid(p):
+			return
 	_teleport(p, pos, yaw)
 	if from != "" and from != dest:
 		_deactivate(from)
