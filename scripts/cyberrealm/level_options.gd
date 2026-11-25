@@ -7,9 +7,20 @@ extends Node
 ## nœuds du niveau (DayNight.real_time / time_of_day, Weather.raining), donc un
 ## joueur qui rejoint le reçoit déjà avec le niveau baké.
 ##
+## Sur un SERVEUR DÉDIÉ (aucun joueur n'est l'hôte), les réglages sont réservés aux joueurs ADMIN (mot de passe du
+## serveur, voir lan_manager.is_admin) : le client envoie sa demande au serveur (message « lvlopt_set »), qui la
+## valide, la mémorise et la diffuse à tous (« lvlopt »). Un joueur qui arrive demande l'état courant (« lvlopt_get »).
+##
 ## Le menu pause n'a pas de point d'extension : on s'y greffe au runtime
 ## (bouton ajouté à la page principale à chaque reconstruction de celle-ci).
 ## Tout est retiré à la sortie de l'arbre (changement de niveau).
+
+enum { LOCAL, SERVER, CLIENT }
+var _net := LOCAL
+var _lan: Node = null
+var _server_state: Dictionary = {}     # SERVEUR : dernier état connu des options
+var _admin_status: Label = null
+var _admin_pw: LineEdit = null
 
 const BTN_META := "level_options_btn"
 const BROADCAST_DELAY := 0.25     # regroupe les rafales (curseur) en un seul envoi
@@ -26,6 +37,21 @@ var _fog_label: Label = null
 var _cloud_slider: HSlider = null
 var _cloud_label: Label = null
 var _info: Label = null
+
+func _ready() -> void:
+	_lan = get_node_or_null("/root/WaylandRoom/LAN")
+	if _lan == null:
+		return
+	if _lan.get("dedicated") == true:
+		_net = SERVER
+		set_process(false)       # pas de menu pause sur un serveur
+		_server_state = _state_from_nodes()
+		_lan.level_message.connect(_on_server_message)
+	elif _lan.get("session_dedicated") == true:
+		_net = CLIENT
+		_lan.level_message.connect(_on_client_message)
+		_lan.admin_changed.connect(_on_admin_changed)
+		_lan.send_level_message("lvlopt_get")      # état courant des options (réglé par un admin avant mon arrivée)
 
 func _process(delta: float) -> void:
 	if _pm == null:
@@ -88,6 +114,9 @@ func _inject() -> void:
 # ── Page « Level » ───────────────────────────────────────────────────
 
 func _is_host() -> bool:
+	# « Peut modifier » : en solo / hôte LAN, l'hôte ; sur serveur dédié, un joueur admin.
+	if _net == CLIENT:
+		return bool(_lan.call("is_admin"))
 	return get_tree().get_multiplayer().is_server()
 
 func _nodes() -> Dictionary:
@@ -105,10 +134,13 @@ func _show_page() -> void:
 	c.add_child(_pm.call("_make_title", "LEVEL OPTIONS"))
 	if not host:
 		_info = Label.new()
-		_info.text = "Only the host can change the level options."
+		_info.text = "Only an admin can change the level options." if _net == CLIENT \
+				else "Only the host can change the level options."
 		_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_info.add_theme_font_size_override("font_size", 14)
 		c.add_child(_info)
+		if _net == CLIENT:
+			_add_admin_login(c)
 
 	# ── Heure ──
 	c.add_child(_pm.call("_make_row_label", "Time of day"))
@@ -183,6 +215,40 @@ func _show_page() -> void:
 	c.add_child(_pm.call("_make_spacer"))
 	c.add_child(_pm.call("_make_back_btn"))
 
+# Connexion admin (serveur dédié) : mot de passe -> demande au serveur ; admin_changed rebâtit la page.
+func _add_admin_login(c: Container) -> void:
+	_admin_pw = LineEdit.new()
+	_admin_pw.secret = true
+	_admin_pw.placeholder_text = "Admin password"
+	_admin_pw.custom_minimum_size = Vector2(0, 36)
+	_admin_pw.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_admin_pw.add_theme_font_size_override("font_size", 14)
+	c.add_child(_admin_pw)
+	var b := _pm.call("_make_btn", "Unlock as admin") as Button
+	b.pressed.connect(_submit_admin_password)
+	_admin_pw.text_submitted.connect(func(_t: String): _submit_admin_password())
+	c.add_child(b)
+	_admin_status = Label.new()
+	_admin_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_admin_status.add_theme_font_size_override("font_size", 13)
+	c.add_child(_admin_status)
+
+func _submit_admin_password() -> void:
+	if _admin_pw == null or _admin_pw.text.is_empty():
+		return
+	if _admin_status != null:
+		_admin_status.text = "Checking…"
+	_lan.call("request_admin", _admin_pw.text)
+	_admin_pw.text = ""
+
+func _on_admin_changed(is_admin: bool) -> void:
+	if _pm == null or not is_instance_valid(_pm) or _pm.get("_current_view") != "level_options":
+		return
+	if is_admin:
+		_show_page()           # la page se rebâtit éditable
+	elif _admin_status != null:
+		_admin_status.text = "Wrong password (or too many attempts: wait 30 s)."
+
 func _refresh_enabled() -> void:
 	var host := _is_host()
 	_time_mode.disabled = not host
@@ -246,9 +312,78 @@ func _apply(state: Dictionary) -> void:
 
 func _broadcast() -> void:
 	_dirty = -1.0
+	if _net == CLIENT:
+		if bool(_lan.call("is_admin")):
+			_lan.send_level_message("lvlopt_set", _state_from_ui())
+		return
 	if not _is_host() or get_tree().get_multiplayer().get_peers().is_empty():
 		return
 	_net_apply.rpc(_state_from_ui())
+
+# ── Serveur dédié ────────────────────────────────────────────────────
+
+# État initial du serveur : celui des nœuds du niveau tels que bakés (leurs scripts sont retirés sur un serveur :
+# les variables exportées sont alors dans la méta « script_props », cf. dedicated_server.gd).
+static func _prop(node: Node, key: String, default: Variant) -> Variant:
+	if node == null:
+		return default
+	var sp: Dictionary = node.get_meta("script_props", {})
+	var v = sp.get(key, node.get(key))
+	return default if v == null else v
+
+func _state_from_nodes() -> Dictionary:
+	var n := _nodes()
+	var dn: Node = n["dn"]
+	var weather: Node = n["weather"]
+	return {
+		"fixed": not bool(_prop(dn, "real_time", true)),
+		"hour": float(_prop(dn, "time_of_day", 12.0)),
+		"fog": float(_prop(dn, "fog_thickness", 1.0)),
+		"cloud": float(_prop(dn, "cloud_density", 0.43)),
+		"rain": bool(_prop(weather, "raining", false))}
+
+# Valide un état reçu (jamais confiance au réseau) et le ramène aux seuls champs/bornes connus.
+static func _sanitize(state: Variant) -> Dictionary:
+	var out := {}
+	if not (state is Dictionary):
+		return out
+	var d: Dictionary = state
+	out["fixed"] = d.get("fixed", false) == true
+	out["rain"] = d.get("rain", false) == true
+	for k in [["hour", 12.0, 0.0, 24.0], ["fog", 1.0, 0.0, 5.0], ["cloud", 0.43, 0.0, 1.0]]:
+		var v = d.get(k[0], k[1])
+		out[k[0]] = clampf(float(v) if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT else k[1], k[2], k[3])
+	return out
+
+func _on_server_message(topic: String, data: Variant, from: int) -> void:
+	match topic:
+		"lvlopt_get":
+			_lan.send_level_message_to(from, "lvlopt", _server_state)
+		"lvlopt_set":
+			if not bool(_lan.call("is_admin", from)):
+				return
+			var st := _sanitize(data)
+			if st.is_empty():
+				return
+			_server_state = st
+			_lan.broadcast_level_message("lvlopt", st)
+
+func _on_client_message(topic: String, data: Variant, _from: int) -> void:
+	if topic != "lvlopt":
+		return
+	var st := _sanitize(data)
+	if st.is_empty():
+		return
+	_apply(st)
+	# Page ouverte : refléter la nouvelle valeur (sans renvoyer de changement).
+	if _pm != null and is_instance_valid(_pm) and _pm.get("_current_view") == "level_options" \
+			and _hour_slider != null and is_instance_valid(_hour_slider):
+		_hour_slider.set_value_no_signal(float(st["hour"]))
+		_time_mode.select(1 if st["fixed"] else 0)
+		_fog_slider.set_value_no_signal(float(st["fog"]))
+		_cloud_slider.set_value_no_signal(float(st["cloud"]))
+		_rain_btn.set_pressed_no_signal(bool(st["rain"]))
+		_update_hour_label(); _update_fog_label(); _update_cloud_label(); _refresh_enabled()
 
 @rpc("authority", "call_remote", "reliable")
 func _net_apply(state: Dictionary) -> void:
