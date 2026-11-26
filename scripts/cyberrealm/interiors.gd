@@ -104,6 +104,11 @@ func _server_ready(level: Node) -> void:
 		if c is Node3D:
 			_interiors[_key(String(c.name))] = c
 			c.process_mode = Node.PROCESS_MODE_INHERIT
+	# Mêmes collisions que chez les clients (_prepare_interior, _activate) : sans elles, les objets simulés ici
+	# traversaient les sols à normales inversées et la structure exportée sans collider (murs, ponts…).
+	for key in _interiors:
+		_fix_floor_colliders(_interiors[key])
+		_make_missing_colliders(key)
 	var props := PropsScript.new()
 	props.name = "Props"
 	add_child(props)

@@ -200,7 +200,7 @@ func _client_hold() -> void:
 		_throw()
 		return
 	_hold_tick += 1
-	if _hold_tick % 3 == 0:
+	if _hold_tick % 2 == 0:      # 30 Hz : l'objet tenu suit la main de plus près
 		var target := _holder.global_position - _holder.global_basis.z * HOLD_DIST
 		props.call("net_send", "prop_hold", [net_id, target], false)
 

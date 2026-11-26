@@ -325,6 +325,7 @@ func _make_body(d: Dictionary) -> void:
 	body.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC if _net == NET_CLIENT else RigidBody3D.FREEZE_MODE_STATIC
 	body.linear_damp = 0.4
 	body.angular_damp = 1.5
+	body.continuous_cd = true                    # petits objets lancés vite : ne traversent plus les murs fins
 	var cs := CollisionShape3D.new()
 	cs.shape = shape
 	cs.position = aabb.get_center() * sc
@@ -384,7 +385,9 @@ func _update_bodies() -> void:
 					(d.mi as MeshInstance3D).global_transform = d.home
 				rb.queue_free()
 				d.body = null
-		elif not d.woken and _min_dist2(pos, centers) < near2 \
+		# Client : aussi pour un objet déjà déplacé (woken, ex. par l'instantané reçu à l'arrivée) dont le corps n'existe
+		# pas encore ici — sans corps, il ne pouvait être ni visé ni heurté.
+		elif (not d.woken or _net == NET_CLIENT) and _min_dist2(pos, centers) < near2 \
 				and is_instance_valid(d.mi) and _usable(d.mi):
 			_make_body(d)
 
