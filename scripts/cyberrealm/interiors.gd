@@ -882,6 +882,8 @@ func _marker_spot(marker: Node3D) -> Dictionary:
 	var space := get_world_3d().direct_space_state
 	var p := marker.global_position
 	var yaw := marker.global_transform.basis.get_euler().y
+	var door_at := p
+	var door_away := Vector3.ZERO
 	# Le joueur sort dos à la porte : regard de la porte vers le point d'arrivée (le marqueur, devant elle). La
 	# rotation du DoorMarker de Morrowind ne le garantit pas. Marqueur sur la porte elle-même (pas de DoorMarker,
 	# ancien export) : recherche d'un point libre autour de la porte, regard tourné vers l'extérieur.
@@ -892,6 +894,8 @@ func _marker_spot(marker: Node3D) -> Dictionary:
 		if away.length() < EXIT_MIN_AWAY:
 			return _find_exit_spot(door)
 		yaw = atan2(-away.x, -away.z)
+		door_away = away.normalized()
+		door_at = door
 	var rq := PhysicsRayQueryParameters3D.create(p + Vector3.UP * GROUND_UP, p + Vector3.DOWN * GROUND_DOWN, 1)
 	var hit := space.intersect_ray(rq)
 	if not hit.is_empty() and (hit.normal as Vector3).y > 0.5:
@@ -902,18 +906,24 @@ func _marker_spot(marker: Node3D) -> Dictionary:
 		sq.transform = Transform3D(Basis.IDENTITY, feet + Vector3.UP * (FEET_TO_ORIGIN + 0.5))
 		if space.intersect_shape(sq, 1).is_empty():
 			return {"pos": feet + Vector3.UP * FEET_TO_ORIGIN, "yaw": yaw}
-	return _find_exit_spot(p)
+	return _find_exit_spot(door_at, door_away)
 
 ## Cherche autour de `door_pos` (monde) un point libre pour la capsule du
 ## joueur, en vue directe de la porte : sol par rayon, capsule sans collision.
-## La direction retenue est celle qui s'éloigne de la porte.
-func _find_exit_spot(door_pos: Vector3) -> Dictionary:
+## `away` (horizontal, normé) : direction de sortie connue (de la porte vers son point d'arrivée). Les points les
+## plus proches de cet axe sont essayés d'abord et le joueur la regarde, dos à la porte, même s'il est posé à côté.
+## Sans elle : premier point libre, regard dans le sens qui s'éloigne de la porte.
+func _find_exit_spot(door_pos: Vector3, away := Vector3.ZERO) -> Dictionary:
 	var space := get_world_3d().direct_space_state
 	var capsule := CapsuleShape3D.new()   # même dimensions que le joueur
+	var dirs: Array = []
+	for i in 16:
+		var ang := TAU * float(i) / 16.0
+		dirs.append(Vector3(sin(ang), 0, cos(ang)))
+	if away != Vector3.ZERO:
+		dirs.sort_custom(func(a: Vector3, b: Vector3) -> bool: return a.dot(away) > b.dot(away))
 	for r in [1.6, 2.2, 1.1, 2.8]:
-		for i in 16:
-			var ang := TAU * float(i) / 16.0
-			var dir := Vector3(sin(ang), 0, cos(ang))
+		for dir: Vector3 in dirs:
 			var p: Vector3 = door_pos + dir * r
 			var rq := PhysicsRayQueryParameters3D.create(p + Vector3.UP * 1.2, p + Vector3.DOWN * 4.0, 1)
 			var hit := space.intersect_ray(rq)
@@ -929,5 +939,8 @@ func _find_exit_spot(door_pos: Vector3) -> Dictionary:
 			var los := PhysicsRayQueryParameters3D.create(door_pos + Vector3.UP * 1.0, feet + Vector3.UP * 1.0, 1)
 			if not space.intersect_ray(los).is_empty():
 				continue
-			return {"pos": feet + Vector3.UP * FEET_TO_ORIGIN, "yaw": atan2(-dir.x, -dir.z)}
+			var look := away if away != Vector3.ZERO else dir
+			return {"pos": feet + Vector3.UP * FEET_TO_ORIGIN, "yaw": atan2(-look.x, -look.z)}
+	if away != Vector3.ZERO:
+		return {"pos": door_pos + away * 1.5 + Vector3.UP, "yaw": atan2(-away.x, -away.z)}
 	return {"pos": door_pos + Vector3(0, 1.0, 1.5), "yaw": 0.0}
