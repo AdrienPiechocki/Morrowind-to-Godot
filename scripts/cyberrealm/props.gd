@@ -291,6 +291,9 @@ func _update_statics(centers: Array, near := STATIC_NEAR, far := STATIC_FAR) -> 
 			sb.queue_free()
 			d.body = null
 
+static func _cur_pos(d: Dictionary) -> Vector3:
+	return (d.mi as Node3D).global_position if is_instance_valid(d.mi) else d.gpos
+
 static func _min_dist2(p: Vector3, centers: Array) -> float:
 	var m := INF
 	for c in centers:
@@ -362,6 +365,9 @@ func _update_bodies() -> void:
 		if body != null and not is_instance_valid(body):
 			d.body = null
 			continue
+		# Distance à la position ACTUELLE de l'objet, pas à sa place d'origine : chez un client, un objet qu'un autre
+		# joueur a déplacé (synchro du serveur) n'avait de corps — donc ne pouvait être visé — que près de son origine.
+		var pos := _cur_pos(d)
 		if body != null:
 			var rb := body as RigidBody3D
 			if not rb.freeze:
@@ -373,11 +379,12 @@ func _update_bodies() -> void:
 					rb.global_transform = d.home
 					d.woken = false
 					_srv_unsync(d)
-			elif not d.woken and _min_dist2(d.gpos, centers) > far2:
-				(d.mi as MeshInstance3D).global_transform = d.home
+			elif not d.woken and _min_dist2(pos, centers) > far2:
+				if _net != NET_CLIENT:      # (client : le mesh est placé par la synchro du serveur, jamais remis ici)
+					(d.mi as MeshInstance3D).global_transform = d.home
 				rb.queue_free()
 				d.body = null
-		elif not d.woken and _min_dist2(d.gpos, centers) < near2 \
+		elif not d.woken and _min_dist2(pos, centers) < near2 \
 				and is_instance_valid(d.mi) and _usable(d.mi):
 			_make_body(d)
 
@@ -430,7 +437,7 @@ func _srv_body_for(id: int) -> RigidBody3D:
 		return null
 	if d.body == null or not is_instance_valid(d.body):
 		# Collisions statiques voisines (caisses, urnes…) d'abord, pour que l'objet ne tombe pas à travers.
-		_update_statics([d.gpos], 8.0, 14.0)
+		_update_statics([_cur_pos(d)], 8.0, 14.0)
 		_make_body(d)
 	return d.body as RigidBody3D
 
