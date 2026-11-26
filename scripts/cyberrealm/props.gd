@@ -517,6 +517,22 @@ func net_apply_snapshot(entries: Array) -> void:
 			elif _net == NET_SERVER:
 				_make_body(d)                # corps figé à la nouvelle place (collisions du serveur)
 
+## Remise à zéro du monde par l'admin (serveur dédié, sans redémarrage) : chaque objet revient à sa place d'origine,
+## intact, endormi ; corps libérés (recréés à la demande près de la caméra). Appelé chez le serveur et chez chaque
+## client (level_sync.gd de CyberRealm, groupe net_snapshot).
+func net_reset() -> void:
+	for d in _bodies:
+		if d.body != null and is_instance_valid(d.body):
+			(d.body as Node).queue_free()
+		d.body = null
+		if _net == NET_SERVER:
+			_srv_unsync(d)
+		d.woken = false
+		d.broken = false
+		if is_instance_valid(d.mi):
+			(d.mi as MeshInstance3D).visible = true
+			(d.mi as MeshInstance3D).global_transform = d.home
+
 func _on_peer_left(peer: int) -> void:
 	for d in _bodies:
 		if d.body != null and is_instance_valid(d.body):
