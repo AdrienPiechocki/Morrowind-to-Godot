@@ -876,10 +876,22 @@ func _on_ground(p: Vector3) -> Vector3:
 ## Point d'arrivée devant une porte : le marqueur lui-même (position + orientation
 ## vers l'extérieur de la porte), posé au sol. Si le marqueur est dans un mur ou
 ## sans sol, on retombe sur la recherche autour de la porte.
+const EXIT_MIN_AWAY := 0.3   # m : en deçà, le marqueur est sur la porte (direction indéfinie)
+
 func _marker_spot(marker: Node3D) -> Dictionary:
 	var space := get_world_3d().direct_space_state
 	var p := marker.global_position
 	var yaw := marker.global_transform.basis.get_euler().y
+	# Le joueur sort dos à la porte : regard de la porte vers le point d'arrivée (le marqueur, devant elle). La
+	# rotation du DoorMarker de Morrowind ne le garantit pas. Marqueur sur la porte elle-même (pas de DoorMarker,
+	# ancien export) : recherche d'un point libre autour de la porte, regard tourné vers l'extérieur.
+	if marker.has_meta("door_position") and marker.get_parent() is Node3D:
+		var door := (marker.get_parent() as Node3D).to_global(marker.get_meta("door_position") as Vector3)
+		var away := p - door
+		away.y = 0.0
+		if away.length() < EXIT_MIN_AWAY:
+			return _find_exit_spot(door)
+		yaw = atan2(-away.x, -away.z)
 	var rq := PhysicsRayQueryParameters3D.create(p + Vector3.UP * GROUND_UP, p + Vector3.DOWN * GROUND_DOWN, 1)
 	var hit := space.intersect_ray(rq)
 	if not hit.is_empty() and (hit.normal as Vector3).y > 0.5:
