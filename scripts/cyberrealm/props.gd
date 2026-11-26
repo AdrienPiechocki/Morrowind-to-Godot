@@ -48,6 +48,10 @@ const LIGHT_COLOR := Color(1.0, 0.68, 0.38)
 const FADE_BEGIN := 70.0                  # m : la lumière s'éteint progressivement (perf iGPU)
 const FADE_LENGTH := 30.0
 const INDOOR_MIN_Y := 3000.0
+# Serveur : distances maximales joueur -> objet pour accepter une demande (portée de visée 3 m + marge de latence).
+const SRV_GRAB_REACH := 4.5
+const SRV_TOUCH_REACH := 3.5
+const SRV_HOLD_REACH := 4.0             # la cible de prise doit rester près du joueur
 
 enum { NET_LOCAL, NET_SERVER, NET_CLIENT }
 var _net := NET_LOCAL
@@ -140,6 +144,8 @@ func _setup_net() -> void:
 	_lan.level_message.connect(_on_level_message)
 	if _net == NET_SERVER:
 		_lan.level_peer_left.connect(_on_peer_left)
+	# Instantané de l'état des objets (joueurs qui arrivent, persistance du serveur) : cf. level_sync.gd de CyberRealm.
+	add_to_group("net_snapshot")
 
 func _process_mesh(mi: MeshInstance3D) -> void:
 	if mi.mesh == null or _mi_seen.has(mi):
@@ -434,21 +440,31 @@ func _on_level_message(topic: String, data: Variant, from: int) -> void:
 	elif _net == NET_CLIENT:
 		_cl_message(topic, data)
 
+## Le joueur `peer` est-il à moins de `reach` m de l'objet `id` ? (position connue du serveur, cf. lan.peer_within)
+func _srv_near(peer: int, id: int, reach: float) -> bool:
+	var d := _cand(id)
+	if d.is_empty() or not is_instance_valid(d.mi):
+		return false
+	var pos: Vector3 = (d.body as Node3D).global_position if d.body != null and is_instance_valid(d.body) \
+			else (d.mi as Node3D).global_position
+	return not _lan.has_method("peer_within") or bool(_lan.peer_within(peer, pos, reach))
+
 func _srv_message(topic: String, data: Variant, from: int) -> void:
 	if not (data is Array or data is int):
 		return
 	match topic:
 		"prop_touch":      # [id, impulse]
-			if data is Array and data.size() == 2 and data[1] is Vector3:
+			if data is Array and data.size() == 2 and data[1] is Vector3 and _srv_near(from, int(data[0]), SRV_TOUCH_REACH):
 				var b := _srv_body_for(int(data[0]))
 				if b != null:
 					b.call("server_touch", data[1])
 		"prop_grab":       # id
-			var b := _srv_body_for(int(data))
+			var b := _srv_body_for(int(data)) if _srv_near(from, int(data), SRV_GRAB_REACH) else null
 			if b == null or not bool(b.call("server_grab", from)):
 				_lan.send_level_message_to(from, "prop_grab_denied", int(data))
 		"prop_hold":       # [id, target]
-			if data is Array and data.size() == 2 and data[1] is Vector3:
+			if data is Array and data.size() == 2 and data[1] is Vector3 \
+					and (not _lan.has_method("peer_within") or bool(_lan.peer_within(from, data[1], SRV_HOLD_REACH))):
 				var d := _cand(int(data[0]))
 				if not d.is_empty() and is_instance_valid(d.body):
 					d.body.call("server_hold", from, data[1])
@@ -461,6 +477,45 @@ func _srv_message(topic: String, data: Variant, from: int) -> void:
 			var d := _cand(int(data))
 			if not d.is_empty() and is_instance_valid(d.body):
 				d.body.call("server_release", from)
+
+# ── Instantané (net_snapshot / net_apply_snapshot) ─────────────────────
+# Entrées : ["b", id] objet cassé ; ["m", id, transform] objet déplacé (mesh hors de sa place d'origine).
+
+## Serveur : état des objets qui ne sont plus tels qu'exportés.
+func net_snapshot() -> Array:
+	var out: Array = []
+	for d in _bodies:
+		if d.broken:
+			out.append(["b", d.id])
+		elif d.woken and is_instance_valid(d.mi):
+			var t := (d.mi as MeshInstance3D).global_transform
+			if not t.is_equal_approx(d.home):
+				out.append(["m", d.id, t])
+	return out
+
+## Client qui arrive (ou serveur qui recharge son état) : objets cassés masqués, objets déplacés remis en place.
+func net_apply_snapshot(entries: Array) -> void:
+	for e in entries:
+		if not (e is Array and e.size() >= 2 and e[0] is String and e[1] is int):
+			continue
+		var d := _cand(int(e[1]))
+		if d.is_empty() or d.broken or not is_instance_valid(d.mi):
+			continue
+		if e[0] == "b":
+			d.broken = true
+			if _net == NET_SERVER:
+				_srv_unsync(d)
+			(d.mi as MeshInstance3D).visible = false
+			if d.body != null and is_instance_valid(d.body):
+				(d.body as Node).queue_free()
+			d.body = null
+		elif e[0] == "m" and e.size() == 3 and e[2] is Transform3D:
+			d.woken = true                   # reste à sa nouvelle place (pas de retour « home » par la distance)
+			(d.mi as MeshInstance3D).global_transform = e[2]
+			if d.body != null and is_instance_valid(d.body):
+				(d.body as Node3D).global_transform = Transform3D((e[2] as Transform3D).basis.orthonormalized(), e[2].origin)
+			elif _net == NET_SERVER:
+				_make_body(d)                # corps figé à la nouvelle place (collisions du serveur)
 
 func _on_peer_left(peer: int) -> void:
 	for d in _bodies:
