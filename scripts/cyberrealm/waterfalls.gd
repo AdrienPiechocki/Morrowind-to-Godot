@@ -10,7 +10,7 @@ extends Node
 
 const SPEED := 1.4        # tours de texture par seconde (V croît vers le bas du mesh : décalage négatif = vers le bas)
 
-const RIVER_SPEED := 0.3  # idem pour les rivières ; mettre un signe négatif pour inverser le courant
+const RIVER_SPEED := 1.4  # idem pour les rivières ; mettre un signe négatif pour inverser le courant
 
 var _mats: Array[BaseMaterial3D] = []
 var _river_mats: Array[BaseMaterial3D] = []

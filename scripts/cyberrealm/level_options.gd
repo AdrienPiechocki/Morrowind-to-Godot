@@ -11,7 +11,7 @@ extends Node
 ## serveur, voir lan_manager.is_admin) : le client envoie sa demande au serveur (message « lvlopt_set »), qui la
 ## valide, la mémorise et la diffuse à tous (« lvlopt »). Un joueur qui arrive demande l'état courant (« lvlopt_get »).
 ##
-## Entrée « Level » dans la sidebar du menu pause via son API add_menu_page ;
+## Entrée « Level » dans la page World du menu pause via son API add_menu_page ;
 ## repli pour un menu pause plus ancien : bouton greffé à la page principale à
 ## chaque reconstruction de celle-ci. Tout est retiré à la sortie de l'arbre
 ## (changement de niveau).
