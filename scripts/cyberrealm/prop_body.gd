@@ -46,6 +46,15 @@ func _ready() -> void:
 	max_contacts_reported = 4
 	add_to_group("prop_body")
 
+# Intérieur désactivé (porte, waypoint : process_mode DISABLED) ou caché alors que l'objet est en main :
+# _physics_process ne tourne plus et ne pourrait jamais le lâcher -> on le lâche ici, sur place.
+func _notification(what: int) -> void:
+	if (what == NOTIFICATION_DISABLED or what == NOTIFICATION_VISIBILITY_CHANGED) \
+			and _holder != null and not (is_inside_tree() and can_process() and is_visible_in_tree()):
+		_release()
+		if net_mode == CLIENT and props != null and is_instance_valid(props):
+			props.call("net_send", "prop_drop", net_id)
+
 func get_interact_prompt() -> String:
 	return "Left click: throw   Right click: drop" if _holder != null else "Left click: take"
 
