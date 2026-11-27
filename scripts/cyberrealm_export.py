@@ -79,8 +79,10 @@ def main():
         shutil.copy(f, HERE / "scripts" / f.name)
 
     # ── 2. Interieurs nettoyes ────────────────────────────────────────
-    # Plus de camera libre / post-traitement / sous-marin (le niveau a les siens) ; le WorldEnvironment devient
-    # un noeud porteur d'Environment (interior_env.gd) ; le shader d'eau est embarque (transfert LAN).
+    # Plus de camera libre / post-traitement / sous-marin (le niveau a les siens) ; plus de WorldEnvironment non
+    # plus : interiors.gd construit l'environnement des interieurs depuis celui du niveau. Garder les 80
+    # Environment + Sky d'origine coutait ~37 Mo de radiance GPU par Sky (calculee meme jamais affichee) :
+    # ~3 Go de memoire GPU pour rien. Le shader d'eau est embarque (transfert LAN).
     water_code = rd(HERE / "shaders" / "water.gdshader")
     water_sub = '[sub_resource type="Shader" id="water_shader"]\ncode = "%s"\n\n' % \
         water_code.replace("\\", "\\\\").replace('"', '\\"')
@@ -92,6 +94,21 @@ def main():
         t = t.replace(m.group(0), "", 1).replace('ExtResource("%s")' % m.group(1), 'SubResource("water_shader")')
         k = t.index("[sub_resource")
         return t[:k] + water_sub + t[k:]
+
+    def drop_unused_sub(t):
+        # Sous-ressources orphelines (en cascade : Environment -> Sky -> ProceduralSkyMaterial).
+        while True:
+            blocks = re.split(r"(?m)^(?=\[(?:node|ext_resource|sub_resource|connection)\b)", t)
+            kept = []
+            for b in blocks:
+                m = re.match(r'\[sub_resource [^\]]*id="([^"]+)"\]', b)
+                if m and t.count('SubResource("%s")' % m.group(1)) == 0:
+                    continue
+                kept.append(b)
+            n = "".join(kept)
+            if n == t:
+                return t
+            t = n
 
     def drop_unused_ext(t):
         for m in list(re.finditer(r'\[ext_resource [^\n]*id="([^"]+)"\]\n\n?', t)):
@@ -106,16 +123,10 @@ def main():
         t = re.sub(r"\[gd_scene load_steps=\d+ ", "[gd_scene ", t)
         out = []
         for b in re.split(r"(?m)^(?=\[(?:node|ext_resource|sub_resource|connection)\b)", t):
-            if re.match(r'\[node name="(FlyCamera|PostFX|Underwater)"', b):
+            if re.match(r'\[node name="(FlyCamera|PostFX|Underwater|WorldEnvironment)"', b):
                 continue
-            if b.startswith('[node name="WorldEnvironment"'):
-                b = b.replace('type="WorldEnvironment"', 'type="Node"', 1)
-                b = re.sub(r"(\[node [^\]]*\]\n)", r'\1script = ExtResource("envscript")\n', b, count=1)
             out.append(b)
-        t = "".join(out)
-        t = t.replace("\n[sub_resource", '\n[ext_resource type="Script" path="%sscripts/interior_env.gd" id="envscript"]\n\n[sub_resource' % P, 1)
-        assert t.count('id="envscript"') == 1, f
-        t = drop_unused_ext(inline_water(t))
+        t = drop_unused_ext(drop_unused_sub(inline_water("".join(out))))
         wr(HERE / "interiors" / os.path.basename(f), t)
         names.append(os.path.basename(f)[:-5])
 
